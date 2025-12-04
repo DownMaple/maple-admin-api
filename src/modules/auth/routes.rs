@@ -1,0 +1,15 @@
+use salvo::prelude::*;
+use crate::common::middleware::auth_middleware;
+use super::handler;
+
+pub fn routes() -> Router {
+    Router::with_path("auth")
+        .push(Router::with_path("login").post(handler::login))
+        .push(Router::with_path("register").post(handler::register))
+        .push(Router::with_path("logout").post(handler::logout))
+        .push(
+            Router::with_path("current")
+                .hoop(auth_middleware)
+                .get(handler::current_user)
+        )
+}

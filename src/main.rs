@@ -1,12 +1,7 @@
-mod api;
-mod config;
-mod db;
-mod middleware;
-mod utils;
+mod common;
+mod modules;
 
 use std::sync::Arc;
-
-
 use salvo::prelude::*;
 use salvo::cors::Cors;
 use salvo::http::Method;
@@ -25,15 +20,15 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // 加载配置
-    let config = config::AppConfig::from_env();
+    let config = common::AppConfig::from_env();
     tracing::info!("配置加载成功");
 
     // 初始化数据库
-    let db = db::init_db().await?;
+    let db = common::database::init_db().await?;
     tracing::info!("数据库初始化成功");
 
     // 创建 JWT 服务
-    let jwt_service = Arc::new(middleware::JwtService::new(
+    let jwt_service = Arc::new(common::jwt::JwtService::new(
         config.jwt.secret.clone(),
         config.jwt.expiration_hours,
     ));
@@ -57,8 +52,12 @@ async fn main() -> anyhow::Result<()> {
         .hoop(Logger::new())
         .hoop(cors.into_handler())
         .hoop(Compression::new())
-        .hoop(middleware::create_deps_middleware(Arc::new(db), jwt_service))
-        .push(api::create_router());
+        .hoop(common::middleware::DepsMiddleware::new(Arc::new(db), jwt_service))
+        .push(
+            Router::with_path("api/v1")
+                .push(modules::health::routes())
+                .push(modules::auth::routes())
+        );
 
     // 创建服务
     let acceptor = TcpListener::new(format!("{}:{}", config.server.host, config.server.port))
