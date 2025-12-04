@@ -1,0 +1,35 @@
+[package]
+name = "maple-admin-api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+salvo = { version = "0.80.0", features = ["cors", "logging", "compression", "oapi"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# SeaORM 相关依赖
+sea-orm = { version = "1.1", features = [
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+    "macros",
+    "with-chrono",
+    "with-uuid",
+] }
+
+# 环境变量和配置
+dotenvy = "0.15"
+
+# JWT 和认证相关
+jsonwebtoken = "9.3"
+bcrypt = "0.15"
+
+# 验证和工具
+regex = "1.10"
+thiserror = "1.0"
+anyhow = "1.0"
