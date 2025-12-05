@@ -10,11 +10,11 @@ pub enum AppError {
     #[error("未授权")]
     Unauthorized,
     
-    #[error("禁止访问")]
-    Forbidden,
+    #[error("禁止访问: {0}")]
+    Forbidden(String),
     
-    #[error("未找到资源")]
-    NotFound,
+    #[error("未找到资源: {0}")]
+    NotFound(String),
     
     #[error("请求参数错误: {0}")]
     BadRequest(String),
@@ -33,8 +33,8 @@ impl AppError {
     pub fn status_code(&self) -> StatusCode {
         match self {
             AppError::Unauthorized => StatusCode::UNAUTHORIZED,
-            AppError::Forbidden => StatusCode::FORBIDDEN,
-            AppError::NotFound => StatusCode::NOT_FOUND,
+            AppError::Forbidden(_) => StatusCode::FORBIDDEN,
+            AppError::NotFound(_) => StatusCode::NOT_FOUND,
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -75,5 +75,12 @@ impl Writer for AppError {
         
         res.status_code(status_code);
         res.render(Json(error_response));
+    }
+}
+
+// 为 AppError 实现 EndpointOutRegister
+impl salvo::oapi::EndpointOutRegister for AppError {
+    fn register(_components: &mut salvo::oapi::Components, _operation: &mut salvo::oapi::Operation) {
+        // AppError 作为错误类型，不需要注册 schema
     }
 }

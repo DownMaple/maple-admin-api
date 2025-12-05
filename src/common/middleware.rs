@@ -7,12 +7,12 @@ use super::error::ErrorResponse;
 
 // 依赖注入中间件
 pub struct DepsMiddleware {
-    db: Arc<DatabaseConnection>,
+    db: Option<Arc<DatabaseConnection>>,
     jwt_service: Arc<JwtService>,
 }
 
 impl DepsMiddleware {
-    pub fn new(db: Arc<DatabaseConnection>, jwt_service: Arc<JwtService>) -> Self {
+    pub fn new(db: Option<Arc<DatabaseConnection>>, jwt_service: Arc<JwtService>) -> Self {
         Self { db, jwt_service }
     }
 }
@@ -20,7 +20,9 @@ impl DepsMiddleware {
 #[async_trait]
 impl Handler for DepsMiddleware {
     async fn handle(&self, _req: &mut Request, depot: &mut Depot, _res: &mut Response, ctrl: &mut FlowCtrl) {
-        depot.insert("db", self.db.clone());
+        if let Some(db) = &self.db {
+            depot.insert("db", db.clone());
+        }
         depot.insert("jwt_service", self.jwt_service.clone());
         ctrl.call_next(_req, depot, _res).await;
     }
@@ -54,8 +56,9 @@ pub async fn auth_middleware(
     // 验证 token
     match jwt_service.validate_token(&token) {
         Ok(claims) => {
-            // 将用户信息存入 depot，供后续处理器使用
             depot.insert("user_id", claims.sub.clone());
+            depot.insert("role_id", claims.role_id.clone());
+            depot.insert("role_code", claims.role_code.clone());
             depot.insert("claims", claims);
         }
         Err(_) => {

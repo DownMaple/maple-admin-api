@@ -8,6 +8,11 @@ pub fn routes() -> Router {
         .push(Router::with_path("register").post(handler::register))
         .push(Router::with_path("logout").post(handler::logout))
         .push(
+            Router::with_path("switch-role")
+                .hoop(auth_middleware)
+                .post(handler::switch_role)
+        )
+        .push(
             Router::with_path("current")
                 .hoop(auth_middleware)
                 .get(handler::current_user)

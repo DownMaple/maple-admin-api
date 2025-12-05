@@ -1,5 +1,7 @@
 mod common;
+mod models;
 mod modules;
+mod routes;
 
 use std::sync::Arc;
 use salvo::prelude::*;
@@ -7,6 +9,7 @@ use salvo::cors::Cors;
 use salvo::http::Method;
 use salvo::logging::Logger;
 use salvo::compression::Compression;
+use salvo::oapi::swagger_ui::SwaggerUi;
 use tracing_subscriber;
 
 #[tokio::main]
@@ -24,8 +27,13 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("配置加载成功");
 
     // 初始化数据库
-    let db = common::database::init_db().await?;
-    tracing::info!("数据库初始化成功");
+    let db = common::database::init_db().await;
+    
+    if db.is_some() {
+        tracing::info!("✅ 数据库初始化成功");
+    } else {
+        tracing::warn!("⚠️  数据库未连接，应用将在无数据库模式下运行");
+    }
 
     // 创建 JWT 服务
     let jwt_service = Arc::new(common::jwt::JwtService::new(
@@ -47,17 +55,18 @@ async fn main() -> anyhow::Result<()> {
         .allow_headers(vec!["Content-Type", "Authorization", "Accept", "X-Requested-With"])
         .allow_credentials(true);
 
+    // 创建 OpenAPI 文档
+    let doc = routes::create_openapi();
+    
     // 创建路由
     let router = Router::new()
         .hoop(Logger::new())
         .hoop(cors.into_handler())
         .hoop(Compression::new())
-        .hoop(common::middleware::DepsMiddleware::new(Arc::new(db), jwt_service))
-        .push(
-            Router::with_path("api/v1")
-                .push(modules::health::routes())
-                .push(modules::auth::routes())
-        );
+        .hoop(common::middleware::DepsMiddleware::new(db.map(Arc::new), jwt_service))
+        .push(routes::create_router())
+        .push(doc.into_router("/api-doc/openapi.json"))
+        .push(SwaggerUi::new("/api-doc/openapi.json").into_router("/swagger"));
 
     // 创建服务
     let acceptor = TcpListener::new(format!("{}:{}", config.server.host, config.server.port))
@@ -65,11 +74,19 @@ async fn main() -> anyhow::Result<()> {
         .await;
     
     let server = Server::new(acceptor);
+
+
     
     tracing::info!(
         "🚀 服务器启动成功，监听地址: http://{}:{}",
         config.server.host,
         config.server.port
+    );
+
+    tracing::info!(
+        "🚀可视化接口文档地址: http://{}:{}/swagger",
+        config.server.host,
+        config.server.port,
     );
 
     // 创建 Service

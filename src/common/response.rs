@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
+use salvo::oapi::ToSchema;
 
-#[derive(Serialize, Deserialize, Debug)]
+/// API 响应结构
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
+#[salvo(schema(bound = "T: ToSchema + 'static"))]
 pub struct ApiResponse<T> {
     pub code: u16,
     pub message: String,
@@ -66,3 +69,4 @@ where
         }
     }
 }
+
