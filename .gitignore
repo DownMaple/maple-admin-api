@@ -31,3 +31,7 @@ coverage/
 # Backup files
 *.bak
 *.backup
+
+# RSA 密钥文件
+config/rsa_private_key.pem
+config/rsa_public_key.pem

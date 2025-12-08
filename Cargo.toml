@@ -28,6 +28,8 @@ dotenvy = "0.15"
 # JWT 和认证相关
 jsonwebtoken = "9.3"
 bcrypt = "0.15"
+rsa = "0.9"
+base64 = "0.22"
 
 # 验证和工具
 regex = "1.10"

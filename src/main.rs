@@ -35,6 +35,13 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("⚠️  数据库未连接，应用将在无数据库模式下运行");
     }
 
+    // 初始化 RSA 密钥管理器
+    if let Err(e) = common::rsa_crypto::init_key_manager() {
+        tracing::error!("❌ RSA 密钥管理器初始化失败: {}", e);
+        return Err(e.into());
+    }
+    tracing::info!("✅ RSA 密钥管理器初始化成功");
+
     // 创建 JWT 服务
     let jwt_service = Arc::new(common::jwt::JwtService::new(
         config.jwt.secret.clone(),

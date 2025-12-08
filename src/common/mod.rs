@@ -5,6 +5,8 @@ pub mod response;
 pub mod middleware;
 pub mod jwt;
 pub mod crypto;
+pub mod rsa_crypto;
+pub mod key_manager;
 pub mod constants;
 
 pub use config::AppConfig;

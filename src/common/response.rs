@@ -3,6 +3,7 @@ use salvo::oapi::ToSchema;
 
 /// API 响应结构
 #[derive(Serialize, Deserialize, Debug, ToSchema)]
+#[serde(rename_all = "camelCase")]
 #[salvo(schema(bound = "T: ToSchema + 'static"))]
 pub struct ApiResponse<T> {
     pub code: u16,
@@ -49,6 +50,7 @@ where
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct PageResponse<T> {
     pub total: u64,
     pub page: u64,

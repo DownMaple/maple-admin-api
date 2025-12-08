@@ -8,14 +8,17 @@ CREATE TABLE IF NOT EXISTS users (
     phone VARCHAR(20),
     avatar VARCHAR(500),
     status SMALLINT NOT NULL DEFAULT 1,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP
+    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_id UUID,
+    updated_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_id UUID,
+    deleted_time TIMESTAMP,
+    deleted_id UUID
 );
 
 CREATE INDEX idx_users_username ON users(username);
 CREATE INDEX idx_users_status ON users(status);
-CREATE INDEX idx_users_deleted_at ON users(deleted_at);
+CREATE INDEX idx_users_deleted_time ON users(deleted_time);
 
 -- 创建角色表
 CREATE TABLE IF NOT EXISTS roles (
@@ -25,21 +28,25 @@ CREATE TABLE IF NOT EXISTS roles (
     description TEXT,
     is_system BOOLEAN NOT NULL DEFAULT FALSE,
     status SMALLINT NOT NULL DEFAULT 1,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMP
+    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_id UUID,
+    updated_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_id UUID,
+    deleted_time TIMESTAMP,
+    deleted_id UUID
 );
 
 CREATE INDEX idx_roles_code ON roles(code);
 CREATE INDEX idx_roles_status ON roles(status);
-CREATE INDEX idx_roles_deleted_at ON roles(deleted_at);
+CREATE INDEX idx_roles_deleted_time ON roles(deleted_time);
 
 -- 创建用户角色关联表
 CREATE TABLE IF NOT EXISTS user_roles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     role_id UUID NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_id UUID,
     UNIQUE(user_id, role_id)
 );
 
@@ -63,7 +70,7 @@ INSERT INTO users (id, username, password, real_name, status)
 VALUES (
     'b0000000-0000-0000-0000-000000000001'::UUID,
     'superAdmin',
-    '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYIiIUWMvEy',
+    '$2b$12$qMUWsD1wyBanEjPn6uEjJ.mPfHrtpxfqgsIpOtX9.zgGyrStoNB2W',
     'superAdmin',
     1
 );

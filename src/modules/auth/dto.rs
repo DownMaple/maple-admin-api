@@ -3,22 +3,28 @@ use salvo::oapi::ToSchema;
 
 /// 登录请求
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 #[salvo(schema(example = json!({
     "username": "superAdmin",
     "password": "superAdmin",
-    "role_id": "a0000000-0000-0000-0000-000000000001"
+    "roleId": "a0000000-0000-0000-0000-000000000001"
 })))]
 pub struct LoginRequest {
     /// 用户名
     pub username: String,
-    /// 密码
+    /// 密码（明文或RSA加密后的Base64字符串）
     pub password: String,
     /// 角色ID，可选，不传则使用第一个角色
     pub role_id: Option<String>,
+    /// 密码是否已加密（true=前端已RSA加密，false=明文密码）
+    /// 默认为 true，因为前端默认会对密码进行 RSA 加密
+    #[serde(default = "default_is_encrypted")]
+    pub is_encrypted: bool,
 }
 
 /// 用户角色信息
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UserRole {
     /// 角色ID
     pub role_id: String,
@@ -30,6 +36,7 @@ pub struct UserRole {
 
 /// 登录响应
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct LoginResponse {
     /// 用户ID
     pub id: String,
@@ -47,8 +54,9 @@ pub struct LoginResponse {
 
 /// 切换角色请求
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 #[salvo(schema(example = json!({
-    "role_id": "a0000000-0000-0000-0000-000000000001"
+    "roleId": "a0000000-0000-0000-0000-000000000001"
 })))]
 pub struct SwitchRoleRequest {
     /// 要切换到的角色ID
@@ -57,6 +65,7 @@ pub struct SwitchRoleRequest {
 
 /// 切换角色响应
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct SwitchRoleResponse {
     /// 新的访问令牌
     pub access_token: String,
@@ -66,8 +75,14 @@ pub struct SwitchRoleResponse {
     pub role: UserRole,
 }
 
+/// is_encrypted 字段的默认值函数
+fn default_is_encrypted() -> bool {
+    true
+}
+
 /// 注册请求
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 #[salvo(schema(example = json!({
     "username": "testuser",
     "password": "password123",

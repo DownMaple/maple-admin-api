@@ -8,7 +8,8 @@ pub struct Model {
     pub id: Uuid,
     pub user_id: Uuid,
     pub role_id: Uuid,
-    pub created_at: DateTime,
+    pub created_time: DateTime,
+    pub created_id: Option<Uuid>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

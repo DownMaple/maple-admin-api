@@ -42,6 +42,7 @@ impl AppError {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct ErrorResponse {
     pub code: u16,
     pub message: String,

@@ -14,9 +14,12 @@ pub struct Model {
     pub phone: Option<String>,
     pub avatar: Option<String>,
     pub status: i16,
-    pub created_at: DateTime,
-    pub updated_at: DateTime,
-    pub deleted_at: Option<DateTime>,
+    pub created_time: DateTime,
+    pub created_id: Option<Uuid>,
+    pub updated_time: DateTime,
+    pub updated_id: Option<Uuid>,
+    pub deleted_time: Option<DateTime>,
+    pub deleted_id: Option<Uuid>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

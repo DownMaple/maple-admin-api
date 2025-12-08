@@ -5,7 +5,7 @@ use uuid::Uuid;
 use std::sync::Arc;
 use sea_orm::{DatabaseConnection, EntityTrait, QueryFilter, ColumnTrait};
 
-use crate::common::{ApiResponse, AppError, jwt::JwtService, crypto};
+use crate::common::{ApiResponse, AppError, jwt::JwtService, crypto, rsa_crypto};
 use crate::models::{user, role, user_role};
 use super::dto::{LoginRequest, LoginResponse, RegisterRequest, UserRole, SwitchRoleRequest, SwitchRoleResponse};
 
@@ -35,18 +35,60 @@ pub async fn login(
     
     let jwt_service = depot.get::<Arc<JwtService>>("jwt_service").unwrap();
     
+    // 首先查找用户（不限制状态和删除状态）
     let find_user = user::Entity::find()
         .filter(user::Column::Username.eq(&login_data.username))
-        .filter(user::Column::Status.eq(1))
-        .filter(user::Column::DeletedAt.is_null())
         .one(db.as_ref())
         .await
         .map_err(|e| AppError::InternalServerError(e.to_string()))?;
     
-    let user = find_user.ok_or(AppError::Unauthorized)?;
+    // 检查用户是否存在
+    let user = match find_user {
+        Some(u) => u,
+        None => {
+            tracing::warn!("登录失败：用户名 '{}' 不存在", login_data.username);
+            return Err(AppError::BadRequest("用户账号不存在".to_string()));
+        }
+    };
     
-    if !crypto::verify_password(&login_data.password, &user.password)? {
-        return Err(AppError::Unauthorized);
+    // 检查账号是否已被删除
+    if user.deleted_time.is_some() {
+        tracing::warn!("登录失败：用户 '{}' 已被删除", login_data.username);
+        return Err(AppError::BadRequest("该账号已被删除，无法登录".to_string()));
+    }
+    
+    // 检查账号状态
+    if user.status != 1 {
+        tracing::warn!("登录失败：用户 '{}' 账号已被禁用，状态: {}", login_data.username, user.status);
+        return Err(AppError::BadRequest("该账号已被禁用，请联系管理员".to_string()));
+    }
+    
+    // 验证密码
+    let plain_password = if login_data.is_encrypted {
+        // 前端已RSA加密，先解密得到明文密码
+        tracing::debug!("密码已加密，开始 RSA 解密...");
+        match rsa_crypto::decrypt_password(&login_data.password) {
+            Ok(pwd) => {
+                tracing::debug!("✅ RSA 密码解密成功");
+                pwd
+            },
+            Err(e) => {
+                tracing::error!("❌ RSA 密码解密失败: {}", e);
+                return Err(e);
+            }
+        }
+    } else {
+        // 明文密码（仅用于测试或特殊场景）
+        tracing::warn!("⚠️  使用明文密码登录，请确认是否为测试环境");
+        login_data.password.clone()
+    };
+    
+    // 使用bcrypt验证密码
+    let password_valid = crypto::verify_password(&plain_password, &user.password)?;
+    
+    if !password_valid {
+        tracing::warn!("登录失败：用户 '{}' 密码错误", login_data.username);
+        return Err(AppError::BadRequest("密码错误".to_string()));
     }
     
     let user_roles = user_role::Entity::find()
@@ -226,4 +268,19 @@ pub async fn current_user(depot: &Depot) -> Json<ApiResponse<serde_json::Value>>
     });
     
     Json(ApiResponse::success(user_info))
+}
+
+/// 获取RSA公钥
+#[endpoint(
+    tags("认证"),
+    responses(
+        (status_code = 200, description = "成功获取公钥")
+    )
+)]
+pub async fn get_public_key() -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let public_key = rsa_crypto::get_public_key()?;
+    let response = serde_json::json!({
+        "public_key": public_key
+    });
+    Ok(Json(ApiResponse::success(response)))
 }
