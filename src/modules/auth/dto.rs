@@ -96,3 +96,29 @@ pub struct RegisterRequest {
     /// 邮箱
     pub email: String,
 }
+
+/// 当前用户信息响应
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UserInfoResponse {
+    /// 用户ID
+    pub id: String,
+    /// 用户名
+    pub user_name: String,
+    /// 真实姓名
+    pub real_name: String,
+    /// 邮箱
+    pub email: Option<String>,
+    /// 手机号
+    pub phone: Option<String>,
+    /// 头像
+    pub avatar: Option<String>,
+    /// 状态：1-正常，0-禁用
+    pub status: i16,
+    /// 用户拥有的所有角色
+    pub roles: Vec<UserRole>,
+    /// 当前角色ID（从token中获取）
+    pub current_role_id: String,
+    /// 当前角色代码
+    pub current_role_code: String,
+}

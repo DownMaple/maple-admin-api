@@ -7,7 +7,7 @@ use sea_orm::{DatabaseConnection, EntityTrait, QueryFilter, ColumnTrait};
 
 use crate::common::{ApiResponse, AppError, jwt::JwtService, crypto, rsa_crypto};
 use crate::models::{user, role, user_role};
-use super::dto::{LoginRequest, LoginResponse, RegisterRequest, UserRole, SwitchRoleRequest, SwitchRoleResponse};
+use super::dto::{LoginRequest, LoginResponse, RegisterRequest, UserRole, SwitchRoleRequest, SwitchRoleResponse, UserInfoResponse};
 
 /// 用户登录
 #[endpoint(
@@ -255,19 +255,74 @@ pub async fn switch_role(
 }
 
 /// 获取当前用户信息
-#[endpoint(tags("认证"))]
-pub async fn current_user(depot: &Depot) -> Json<ApiResponse<serde_json::Value>> {
-    let user_id = depot.get::<String>("user_id").unwrap();
+#[endpoint(
+    tags("认证"),
+    responses(
+        (status_code = 200, description = "获取成功"),
+        (status_code = 401, description = "未授权"),
+        (status_code = 500, description = "服务器错误")
+    )
+)]
+pub async fn get_user_info(depot: &Depot) -> Result<Json<ApiResponse<UserInfoResponse>>, AppError> {
+    // 从 token 中获取 user_id（由 auth_middleware 解析后存入 depot）
+    let user_id_str = depot.get::<String>("user_id")
+        .map_err(|_| AppError::Unauthorized)?;
     
-    // TODO: 从数据库获取用户详细信息
-    let user_info = serde_json::json!({
-        "id": user_id,
-        "username": "admin",
-        "email": "admin@example.com",
-        "roles": ["admin"]
-    });
+    let user_id = Uuid::parse_str(user_id_str.as_str())
+        .map_err(|_| AppError::Unauthorized)?;
     
-    Json(ApiResponse::success(user_info))
+    // 获取当前角色信息（从 token 中）
+    let current_role_id = depot.get::<String>("role_id")
+        .map_err(|_| AppError::Unauthorized)?
+        .clone();
+    let current_role_code = depot.get::<String>("role_code")
+        .map_err(|_| AppError::Unauthorized)?
+        .clone();
+    
+    // 获取数据库连接
+    let db = depot.get::<Arc<DatabaseConnection>>("db")
+        .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
+    
+    // 查询用户信息
+    let user = user::Entity::find_by_id(user_id)
+        .one(db.as_ref())
+        .await
+        .map_err(|e| AppError::InternalServerError(e.to_string()))?
+        .ok_or(AppError::NotFound("用户不存在".to_string()))?;
+    
+    // 查询用户的所有角色
+    let user_roles = user_role::Entity::find()
+        .filter(user_role::Column::UserId.eq(user_id))
+        .find_also_related(role::Entity)
+        .all(db.as_ref())
+        .await
+        .map_err(|e| AppError::InternalServerError(e.to_string()))?;
+    
+    let roles: Vec<UserRole> = user_roles
+        .iter()
+        .filter_map(|(_, role_opt)| {
+            role_opt.as_ref().map(|r| UserRole {
+                role_id: r.id.to_string(),
+                role_code: r.code.clone(),
+                role_name: r.name.clone(),
+            })
+        })
+        .collect();
+    
+    let response = UserInfoResponse {
+        id: user.id.to_string(),
+        user_name: user.username,
+        real_name: user.real_name,
+        email: user.email,
+        phone: user.phone,
+        avatar: user.avatar,
+        status: user.status,
+        roles,
+        current_role_id,
+        current_role_code,
+    };
+    
+    Ok(Json(ApiResponse::success(response)))
 }
 
 /// 获取RSA公钥

@@ -7,15 +7,15 @@ pub fn routes() -> Router {
         .push(Router::with_path("login").post(handler::login))
         .push(Router::with_path("register").post(handler::register))
         .push(Router::with_path("logout").post(handler::logout))
-        .push(Router::with_path("public-key").get(handler::get_public_key))
+        .push(Router::with_path("publicKey").get(handler::get_public_key))
         .push(
-            Router::with_path("switch-role")
+            Router::with_path("switchRole")
                 .hoop(auth_middleware)
                 .post(handler::switch_role)
         )
         .push(
-            Router::with_path("current")
+            Router::with_path("getUserInfo")
                 .hoop(auth_middleware)
-                .get(handler::current_user)
+                .get(handler::get_user_info)
         )
 }
