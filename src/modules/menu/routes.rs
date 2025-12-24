@@ -6,6 +6,7 @@ pub fn routes() -> Router {
     Router::with_path("menu")
         .hoop(auth_middleware)
         .push(Router::with_path("list").get(handler::get_menu_list))
+        .push(Router::with_path("tree").get(handler::get_menu_tree))
         .push(Router::with_path("getUserRoutes").get(handler::get_user_menus))
         .push(Router::with_path("permissions").get(handler::get_user_permissions))
         .push(Router::new().post(handler::create_menu))

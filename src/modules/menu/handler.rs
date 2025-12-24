@@ -1,14 +1,16 @@
-use salvo::prelude::*;
-use salvo::oapi::extract::{JsonBody, PathParam};
-use uuid::Uuid;
-use std::sync::Arc;
-use std::collections::HashMap;
-use sea_orm::{DatabaseConnection, EntityTrait, QueryFilter, ColumnTrait, QueryOrder, ActiveModelTrait, Set};
 use chrono::Utc;
+use salvo::oapi::extract::{JsonBody, PathParam};
+use salvo::prelude::*;
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set,
+};
+use std::collections::HashMap;
+use std::sync::Arc;
+use uuid::Uuid;
 
+use super::dto::{CreateMenuRequest, MenuResponse, MenuTreeResponse, UpdateMenuRequest};
 use crate::common::{ApiResponse, AppError};
 use crate::models::{menu, role_menu};
-use super::dto::{CreateMenuRequest, UpdateMenuRequest, MenuResponse, MenuTreeResponse};
 
 /// 获取菜单列表（树形结构）
 #[endpoint(
@@ -18,8 +20,11 @@ use super::dto::{CreateMenuRequest, UpdateMenuRequest, MenuResponse, MenuTreeRes
         (status_code = 500, description = "服务器错误")
     )
 )]
-pub async fn get_menu_list(depot: &Depot) -> Result<Json<ApiResponse<Vec<MenuResponse>>>, AppError> {
-    let db = depot.get::<Arc<DatabaseConnection>>("db")
+pub async fn get_menu_tree(
+    depot: &Depot,
+) -> Result<Json<ApiResponse<Vec<MenuResponse>>>, AppError> {
+    let db = depot
+        .get::<Arc<DatabaseConnection>>("db")
         .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
 
     let menus = menu::Entity::find()
@@ -33,6 +38,33 @@ pub async fn get_menu_list(depot: &Depot) -> Result<Json<ApiResponse<Vec<MenuRes
     Ok(Json(ApiResponse::success(tree)))
 }
 
+/// 获取菜单列表（列表结构）
+#[endpoint(
+    tags("全部菜单列表"),
+    responses(
+        (status_code = 200, description = "获取成功"),
+        (status_code = 500, description = "服务器错误")
+    )
+)]
+pub async fn get_menu_list(
+    depot: &Depot,
+) -> Result<Json<ApiResponse<Vec<MenuResponse>>>, AppError> {
+    let db = depot
+        .get::<Arc<DatabaseConnection>>("db")
+        .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
+
+    let menus = menu::Entity::find()
+        .filter(menu::Column::DeletedTime.is_null())
+        .order_by_asc(menu::Column::Sort)
+        .all(db.as_ref())
+        .await
+        .map_err(|e| AppError::InternalServerError(e.to_string()))?;
+
+    Ok(Json(ApiResponse::success(
+        menus.into_iter().map(|m| model_to_response(&m)).collect(),
+    )))
+}
+
 /// 获取当前用户的菜单（根据角色权限）
 #[endpoint(
     tags("菜单管理"),
@@ -42,14 +74,17 @@ pub async fn get_menu_list(depot: &Depot) -> Result<Json<ApiResponse<Vec<MenuRes
         (status_code = 500, description = "服务器错误")
     )
 )]
-pub async fn get_user_menus(depot: &Depot) -> Result<Json<ApiResponse<Vec<MenuTreeResponse>>>, AppError> {
-    let role_id_str = depot.get::<String>("role_id")
-        .map_err(|_| AppError::Unauthorized)?;
-    
-    let role_id = Uuid::parse_str(role_id_str.as_str())
+pub async fn get_user_menus(
+    depot: &Depot,
+) -> Result<Json<ApiResponse<Vec<MenuTreeResponse>>>, AppError> {
+    let role_id_str = depot
+        .get::<String>("role_id")
         .map_err(|_| AppError::Unauthorized)?;
 
-    let db = depot.get::<Arc<DatabaseConnection>>("db")
+    let role_id = Uuid::parse_str(role_id_str.as_str()).map_err(|_| AppError::Unauthorized)?;
+
+    let db = depot
+        .get::<Arc<DatabaseConnection>>("db")
         .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
 
     // 查询角色关联的菜单
@@ -64,11 +99,7 @@ pub async fn get_user_menus(depot: &Depot) -> Result<Json<ApiResponse<Vec<MenuTr
     let menus: Vec<menu::Model> = role_menus
         .into_iter()
         .filter_map(|(_, m)| m)
-        .filter(|m| {
-            m.deleted_time.is_none() 
-            && m.status == 1 
-            && m.is_show
-        })
+        .filter(|m| m.deleted_time.is_none() && m.status == 1 && m.is_show)
         .collect();
 
     let tree = build_menu_tree_for_route(&menus, None);
@@ -84,14 +115,17 @@ pub async fn get_user_menus(depot: &Depot) -> Result<Json<ApiResponse<Vec<MenuTr
         (status_code = 500, description = "服务器错误")
     )
 )]
-pub async fn get_user_permissions(depot: &Depot) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
-    let role_id_str = depot.get::<String>("role_id")
-        .map_err(|_| AppError::Unauthorized)?;
-    
-    let role_id = Uuid::parse_str(role_id_str.as_str())
+pub async fn get_user_permissions(
+    depot: &Depot,
+) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
+    let role_id_str = depot
+        .get::<String>("role_id")
         .map_err(|_| AppError::Unauthorized)?;
 
-    let db = depot.get::<Arc<DatabaseConnection>>("db")
+    let role_id = Uuid::parse_str(role_id_str.as_str()).map_err(|_| AppError::Unauthorized)?;
+
+    let db = depot
+        .get::<Arc<DatabaseConnection>>("db")
         .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
 
     let role_menus = role_menu::Entity::find()
@@ -127,7 +161,8 @@ pub async fn get_menu(
     let menu_id = Uuid::parse_str(&id.into_inner())
         .map_err(|_| AppError::BadRequest("无效的菜单ID".to_string()))?;
 
-    let db = depot.get::<Arc<DatabaseConnection>>("db")
+    let db = depot
+        .get::<Arc<DatabaseConnection>>("db")
         .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
 
     let menu = menu::Entity::find_by_id(menu_id)
@@ -154,19 +189,23 @@ pub async fn create_menu(
     depot: &Depot,
 ) -> Result<Json<ApiResponse<MenuResponse>>, AppError> {
     let data = req.into_inner();
-    
+
     // 验证菜单类型
     if !["catalog", "menu", "button"].contains(&data.menu_type.as_str()) {
         return Err(AppError::BadRequest("无效的菜单类型".to_string()));
     }
 
-    let db = depot.get::<Arc<DatabaseConnection>>("db")
+    let db = depot
+        .get::<Arc<DatabaseConnection>>("db")
         .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
 
-    let user_id = depot.get::<String>("user_id").ok()
+    let user_id = depot
+        .get::<String>("user_id")
+        .ok()
         .and_then(|s| Uuid::parse_str(s.as_str()).ok());
 
-    let parent_id = data.parent_id
+    let parent_id = data
+        .parent_id
         .as_ref()
         .map(|s| Uuid::parse_str(s))
         .transpose()
@@ -195,7 +234,9 @@ pub async fn create_menu(
         deleted_id: Set(None),
     };
 
-    let menu = new_menu.insert(db.as_ref()).await
+    let menu = new_menu
+        .insert(db.as_ref())
+        .await
         .map_err(|e| AppError::InternalServerError(e.to_string()))?;
 
     Ok(Json(ApiResponse::success_with_message(
@@ -223,10 +264,13 @@ pub async fn update_menu(
 
     let data = req.into_inner();
 
-    let db = depot.get::<Arc<DatabaseConnection>>("db")
+    let db = depot
+        .get::<Arc<DatabaseConnection>>("db")
         .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
 
-    let user_id = depot.get::<String>("user_id").ok()
+    let user_id = depot
+        .get::<String>("user_id")
+        .ok()
         .and_then(|s| Uuid::parse_str(s.as_str()).ok());
 
     let existing = menu::Entity::find_by_id(menu_id)
@@ -237,13 +281,15 @@ pub async fn update_menu(
         .ok_or(AppError::NotFound("菜单不存在".to_string()))?;
 
     let mut active_model: menu::ActiveModel = existing.into();
-    
+
     if let Some(parent_id) = data.parent_id {
         let pid = if parent_id.is_empty() {
             None
         } else {
-            Some(Uuid::parse_str(&parent_id)
-                .map_err(|_| AppError::BadRequest("无效的父菜单ID".to_string()))?)
+            Some(
+                Uuid::parse_str(&parent_id)
+                    .map_err(|_| AppError::BadRequest("无效的父菜单ID".to_string()))?,
+            )
         };
         active_model.parent_id = Set(pid);
     }
@@ -287,7 +333,9 @@ pub async fn update_menu(
     active_model.updated_time = Set(Utc::now().naive_utc());
     active_model.updated_id = Set(user_id);
 
-    let updated = active_model.update(db.as_ref()).await
+    let updated = active_model
+        .update(db.as_ref())
+        .await
         .map_err(|e| AppError::InternalServerError(e.to_string()))?;
 
     Ok(Json(ApiResponse::success_with_message(
@@ -312,10 +360,13 @@ pub async fn delete_menu(
     let menu_id = Uuid::parse_str(&id.into_inner())
         .map_err(|_| AppError::BadRequest("无效的菜单ID".to_string()))?;
 
-    let db = depot.get::<Arc<DatabaseConnection>>("db")
+    let db = depot
+        .get::<Arc<DatabaseConnection>>("db")
         .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
 
-    let user_id = depot.get::<String>("user_id").ok()
+    let user_id = depot
+        .get::<String>("user_id")
+        .ok()
         .and_then(|s| Uuid::parse_str(s.as_str()).ok());
 
     let existing = menu::Entity::find_by_id(menu_id)
@@ -329,10 +380,15 @@ pub async fn delete_menu(
     active_model.deleted_time = Set(Some(Utc::now().naive_utc()));
     active_model.deleted_id = Set(user_id);
 
-    active_model.update(db.as_ref()).await
+    active_model
+        .update(db.as_ref())
+        .await
         .map_err(|e| AppError::InternalServerError(e.to_string()))?;
 
-    Ok(Json(ApiResponse::success_with_message((), "删除成功".to_string())))
+    Ok(Json(ApiResponse::success_with_message(
+        (),
+        "删除成功".to_string(),
+    )))
 }
 
 // ========== 辅助函数 ==========
@@ -369,12 +425,15 @@ fn build_menu_tree(menus: &[menu::Model], parent_id: Option<Uuid>) -> Vec<MenuRe
             response
         })
         .collect();
-    
+
     result.sort_by_key(|m| m.sort);
     result
 }
 
-fn build_menu_tree_for_route(menus: &[menu::Model], parent_id: Option<Uuid>) -> Vec<MenuTreeResponse> {
+fn build_menu_tree_for_route(
+    menus: &[menu::Model],
+    parent_id: Option<Uuid>,
+) -> Vec<MenuTreeResponse> {
     // 构建父子关系映射
     let mut children_map: HashMap<Option<Uuid>, Vec<&menu::Model>> = HashMap::new();
     for m in menus {
@@ -388,22 +447,29 @@ fn build_menu_tree_for_route(menus: &[menu::Model], parent_id: Option<Uuid>) -> 
         let mut result: Vec<MenuTreeResponse> = children_map
             .get(&parent_id)
             .map(|children| {
-                children.iter().map(|m| {
-                    let sub_children = build_recursive(children_map, Some(m.id));
-                    MenuTreeResponse {
-                        id: m.id.to_string(),
-                        name: m.name.clone(),
-                        menu_type: m.menu_type.clone(),
-                        path: m.path.clone(),
-                        component: m.component.clone(),
-                        icon: m.icon.clone(),
-                        sort: m.sort,
-                        children: if sub_children.is_empty() { None } else { Some(sub_children) },
-                    }
-                }).collect()
+                children
+                    .iter()
+                    .map(|m| {
+                        let sub_children = build_recursive(children_map, Some(m.id));
+                        MenuTreeResponse {
+                            id: m.id.to_string(),
+                            name: m.name.clone(),
+                            menu_type: m.menu_type.clone(),
+                            path: m.path.clone(),
+                            component: m.component.clone(),
+                            icon: m.icon.clone(),
+                            sort: m.sort,
+                            children: if sub_children.is_empty() {
+                                None
+                            } else {
+                                Some(sub_children)
+                            },
+                        }
+                    })
+                    .collect()
             })
             .unwrap_or_default();
-        
+
         result.sort_by_key(|m| m.sort);
         result
     }

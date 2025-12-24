@@ -49,8 +49,9 @@ where
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, ToSchema)]
 #[serde(rename_all = "camelCase")]
+#[salvo(schema(bound = "T: ToSchema + 'static"))]
 pub struct PageResponse<T> {
     pub total: u64,
     pub page: u64,
