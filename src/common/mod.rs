@@ -1,5 +1,6 @@
 pub mod config;
 pub mod database;
+pub mod postgres_service;
 pub mod error;
 pub mod response;
 pub mod middleware;

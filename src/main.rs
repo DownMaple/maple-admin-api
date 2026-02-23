@@ -26,6 +26,12 @@ async fn main() -> anyhow::Result<()> {
     let config = common::AppConfig::from_env();
     tracing::info!("配置加载成功");
 
+    // 确保 PostgreSQL 服务已启动
+    if let Err(e) = common::postgres_service::ensure_postgres_running().await {
+        tracing::warn!("⚠️  PostgreSQL 服务启动失败: {}", e);
+        tracing::warn!("⚠️  应用将尝试继续连接数据库...");
+    }
+
     // 初始化数据库
     let db = common::database::init_db().await;
     
