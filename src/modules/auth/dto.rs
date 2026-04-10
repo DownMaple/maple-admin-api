@@ -75,6 +75,27 @@ pub struct SwitchRoleResponse {
     pub role: UserRole,
 }
 
+/// 刷新 token 请求
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[salvo(schema(example = json!({
+    "refreshToken": "your-refresh-token"
+})))]
+pub struct RefreshTokenRequest {
+    /// 刷新令牌，优先使用 body 的值；为空时可回退到 cookie
+    pub refresh_token: Option<String>,
+}
+
+/// 刷新 token 响应
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshTokenResponse {
+    /// 新的访问令牌
+    pub access_token: String,
+    /// 新的刷新令牌
+    pub refresh_token: String,
+}
+
 /// is_encrypted 字段的默认值函数
 fn default_is_encrypted() -> bool {
     true

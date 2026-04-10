@@ -4,4 +4,4 @@ pub mod dto;
 mod routes;
 mod handler;
 
-pub use routes::routes as user_routes;
+pub use routes::routes;

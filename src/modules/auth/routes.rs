@@ -7,6 +7,7 @@ pub fn routes() -> Router {
         .push(Router::with_path("login").post(handler::login))
         .push(Router::with_path("register").post(handler::register))
         .push(Router::with_path("logout").post(handler::logout))
+        .push(Router::with_path("refreshToken").post(handler::refresh_token))
         .push(Router::with_path("publicKey").get(handler::get_public_key))
         .push(
             Router::with_path("switchRole")
