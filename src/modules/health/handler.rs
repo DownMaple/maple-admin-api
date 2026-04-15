@@ -1,9 +1,9 @@
-use salvo::prelude::*;
 use salvo::oapi::ToSchema;
+use salvo::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::common::{ApiResponse};
+use crate::common::ApiResponse;
 
 /// 健康检查响应
 #[derive(Serialize, Deserialize, ToSchema)]

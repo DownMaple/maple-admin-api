@@ -1,6 +1,6 @@
-use salvo::prelude::*;
-use crate::common::middleware::auth_middleware;
 use super::handler;
+use crate::common::middleware::auth_middleware;
+use salvo::prelude::*;
 
 pub fn routes() -> Router {
     Router::with_path("auth")
@@ -12,11 +12,11 @@ pub fn routes() -> Router {
         .push(
             Router::with_path("switchRole")
                 .hoop(auth_middleware)
-                .post(handler::switch_role)
+                .post(handler::switch_role),
         )
         .push(
             Router::with_path("getUserInfo")
                 .hoop(auth_middleware)
-                .get(handler::get_user_info)
+                .get(handler::get_user_info),
         )
 }

@@ -1,4 +1,5 @@
--- 创建用户表
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE TABLE IF NOT EXISTS users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     username VARCHAR(50) NOT NULL UNIQUE,
@@ -16,11 +17,10 @@ CREATE TABLE IF NOT EXISTS users (
     deleted_id UUID
 );
 
-CREATE INDEX idx_users_username ON users(username);
-CREATE INDEX idx_users_status ON users(status);
-CREATE INDEX idx_users_deleted_time ON users(deleted_time);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
+CREATE INDEX IF NOT EXISTS idx_users_deleted_time ON users(deleted_time);
 
--- 创建角色表
 CREATE TABLE IF NOT EXISTS roles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     code VARCHAR(50) NOT NULL UNIQUE,
@@ -36,11 +36,10 @@ CREATE TABLE IF NOT EXISTS roles (
     deleted_id UUID
 );
 
-CREATE INDEX idx_roles_code ON roles(code);
-CREATE INDEX idx_roles_status ON roles(status);
-CREATE INDEX idx_roles_deleted_time ON roles(deleted_time);
+CREATE INDEX IF NOT EXISTS idx_roles_code ON roles(code);
+CREATE INDEX IF NOT EXISTS idx_roles_status ON roles(status);
+CREATE INDEX IF NOT EXISTS idx_roles_deleted_time ON roles(deleted_time);
 
--- 创建用户角色关联表
 CREATE TABLE IF NOT EXISTS user_roles (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -50,10 +49,9 @@ CREATE TABLE IF NOT EXISTS user_roles (
     UNIQUE(user_id, role_id)
 );
 
-CREATE INDEX idx_user_roles_user_id ON user_roles(user_id);
-CREATE INDEX idx_user_roles_role_id ON user_roles(role_id);
+CREATE INDEX IF NOT EXISTS idx_user_roles_user_id ON user_roles(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_roles_role_id ON user_roles(role_id);
 
--- 插入超级管理员角色
 INSERT INTO roles (id, code, name, description, is_system, status)
 VALUES (
     'a0000000-0000-0000-0000-000000000001'::UUID,
@@ -62,10 +60,9 @@ VALUES (
     '系统超级管理员，拥有所有权限，不可编辑删除',
     TRUE,
     1
-);
+)
+ON CONFLICT (id) DO NOTHING;
 
--- 插入超级管理员用户
--- 密码: superAdmin (使用bcrypt加密)
 INSERT INTO users (id, username, password, real_name, status)
 VALUES (
     'b0000000-0000-0000-0000-000000000001'::UUID,
@@ -73,11 +70,12 @@ VALUES (
     '$2b$12$qMUWsD1wyBanEjPn6uEjJ.mPfHrtpxfqgsIpOtX9.zgGyrStoNB2W',
     'superAdmin',
     1
-);
+)
+ON CONFLICT (id) DO NOTHING;
 
--- 关联超级管理员用户和角色
 INSERT INTO user_roles (user_id, role_id)
 VALUES (
     'b0000000-0000-0000-0000-000000000001'::UUID,
     'a0000000-0000-0000-0000-000000000001'::UUID
-);
+)
+ON CONFLICT (user_id, role_id) DO NOTHING;

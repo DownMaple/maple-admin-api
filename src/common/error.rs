@@ -6,25 +6,25 @@ use thiserror::Error;
 pub enum AppError {
     #[error("数据库错误: {0}")]
     DatabaseError(#[from] sea_orm::DbErr),
-    
+
     #[error("未授权")]
     Unauthorized,
-    
+
     #[error("禁止访问: {0}")]
     Forbidden(String),
-    
+
     #[error("未找到资源: {0}")]
     NotFound(String),
-    
+
     #[error("请求参数错误: {0}")]
     BadRequest(String),
-    
+
     #[error("内部服务器错误: {0}")]
     InternalServerError(String),
-    
+
     #[error("JWT错误: {0}")]
     JwtError(#[from] jsonwebtoken::errors::Error),
-    
+
     #[error("密码哈希错误")]
     BcryptError(#[from] bcrypt::BcryptError),
 }
@@ -69,11 +69,8 @@ impl ErrorResponse {
 impl Writer for AppError {
     async fn write(mut self, _req: &mut Request, _depot: &mut Depot, res: &mut Response) {
         let status_code = self.status_code();
-        let error_response = ErrorResponse::new(
-            status_code.as_u16(),
-            self.to_string(),
-        );
-        
+        let error_response = ErrorResponse::new(status_code.as_u16(), self.to_string());
+
         res.status_code(status_code);
         res.render(Json(error_response));
     }
@@ -81,7 +78,10 @@ impl Writer for AppError {
 
 // 为 AppError 实现 EndpointOutRegister
 impl salvo::oapi::EndpointOutRegister for AppError {
-    fn register(_components: &mut salvo::oapi::Components, _operation: &mut salvo::oapi::Operation) {
+    fn register(
+        _components: &mut salvo::oapi::Components,
+        _operation: &mut salvo::oapi::Operation,
+    ) {
         // AppError 作为错误类型，不需要注册 schema
     }
 }

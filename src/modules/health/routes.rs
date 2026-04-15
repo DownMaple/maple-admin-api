@@ -1,7 +1,6 @@
-use salvo::prelude::*;
 use super::handler;
+use salvo::prelude::*;
 
 pub fn routes() -> Router {
-    Router::with_path("health")
-        .get(handler::health_check)
+    Router::with_path("health").get(handler::health_check)
 }

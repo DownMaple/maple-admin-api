@@ -3,13 +3,13 @@ mod models;
 mod modules;
 mod routes;
 
-use std::sync::Arc;
-use salvo::prelude::*;
+use salvo::compression::Compression;
 use salvo::cors::Cors;
 use salvo::http::Method;
 use salvo::logging::Logger;
-use salvo::compression::Compression;
 use salvo::oapi::swagger_ui::SwaggerUi;
+use salvo::prelude::*;
+use std::sync::Arc;
 use tracing_subscriber;
 
 #[tokio::main]
@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 初始化数据库
     let db = common::database::init_db().await;
-    
+
     if db.is_some() {
         tracing::info!("✅ 数据库初始化成功");
     } else {
@@ -54,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
         config.jwt.expiration_hours,
     ));
 
-    // 配置 CORS  
+    // 配置 CORS
     let cors = Cors::new()
         .allow_origin(&config.cors.allow_origins)
         .allow_methods(vec![
@@ -65,18 +65,26 @@ async fn main() -> anyhow::Result<()> {
             Method::OPTIONS,
             Method::PATCH,
         ])
-        .allow_headers(vec!["Content-Type", "Authorization", "Accept", "X-Requested-With"])
+        .allow_headers(vec![
+            "Content-Type",
+            "Authorization",
+            "Accept",
+            "X-Requested-With",
+        ])
         .allow_credentials(true);
 
     // 创建 OpenAPI 文档
     let doc = routes::create_openapi();
-    
+
     // 创建路由
     let router = Router::new()
         .hoop(Logger::new())
         .hoop(cors.into_handler())
         .hoop(Compression::new())
-        .hoop(common::middleware::DepsMiddleware::new(db.map(Arc::new), jwt_service))
+        .hoop(common::middleware::DepsMiddleware::new(
+            db.map(Arc::new),
+            jwt_service,
+        ))
         .push(routes::create_router())
         .push(doc.into_router("/api-doc/openapi.json"))
         .push(SwaggerUi::new("/api-doc/openapi.json").into_router("/swagger"));
@@ -85,11 +93,9 @@ async fn main() -> anyhow::Result<()> {
     let acceptor = TcpListener::new(format!("{}:{}", config.server.host, config.server.port))
         .bind()
         .await;
-    
+
     let server = Server::new(acceptor);
 
-
-    
     tracing::info!(
         "🚀 服务器启动成功，监听地址: http://{}:{}",
         config.server.host,

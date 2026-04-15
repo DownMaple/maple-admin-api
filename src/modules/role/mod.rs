@@ -1,1 +1,5 @@
-// role 模块 - 待实现
+pub mod dto;
+mod handler;
+mod routes;
+
+pub use routes::routes;

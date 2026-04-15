@@ -1,318 +1,256 @@
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+
 use chrono::Utc;
 use salvo::oapi::extract::{JsonBody, PathParam};
 use salvo::prelude::*;
 use sea_orm::{
-    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set,
+    ActiveModelTrait, ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter,
+    QueryOrder, Set,
 };
-use std::collections::HashMap;
-use std::sync::Arc;
 use uuid::Uuid;
 
-use super::dto::{CreateMenuRequest, MenuResponse, MenuTreeResponse, UpdateMenuRequest};
+use super::dto::{
+    BatchDeleteMenusRequest, ButtonOptionResponse, CreateMenuRequest, MenuResponse,
+    MenuTreeResponse, UpdateMenuRequest,
+};
 use crate::common::{ApiResponse, AppError};
 use crate::models::{menu, role_menu};
 
-/// 获取菜单列表（树形结构）
-#[endpoint(
-    tags("菜单管理"),
-    responses(
-        (status_code = 200, description = "获取成功"),
-        (status_code = 500, description = "服务器错误")
-    )
-)]
+const SUPER_ADMIN_ROLE_ID: &str = "a0000000-0000-0000-0000-000000000001";
+
+#[endpoint(tags("菜单管理"))]
 pub async fn get_menu_tree(
     depot: &Depot,
 ) -> Result<Json<ApiResponse<Vec<MenuResponse>>>, AppError> {
-    let db = depot
-        .get::<Arc<DatabaseConnection>>("db")
-        .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
-
-    let menus = menu::Entity::find()
-        .filter(menu::Column::DeletedTime.is_null())
-        .order_by_asc(menu::Column::Sort)
-        .all(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?;
-
-    let tree = build_menu_tree(&menus, None);
-    Ok(Json(ApiResponse::success(tree)))
+    let db = get_db(depot)?;
+    let menus = fetch_all_menus(db.as_ref()).await?;
+    Ok(Json(ApiResponse::success(build_menu_tree(&menus, None))))
 }
 
-/// 获取菜单列表（列表结构）
-#[endpoint(
-    tags("全部菜单列表"),
-    responses(
-        (status_code = 200, description = "获取成功"),
-        (status_code = 500, description = "服务器错误")
-    )
-)]
+#[endpoint(tags("菜单管理"))]
 pub async fn get_menu_list(
     depot: &Depot,
 ) -> Result<Json<ApiResponse<Vec<MenuResponse>>>, AppError> {
-    let db = depot
-        .get::<Arc<DatabaseConnection>>("db")
-        .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
-
-    let menus = menu::Entity::find()
-        .filter(menu::Column::DeletedTime.is_null())
-        .order_by_asc(menu::Column::Sort)
-        .all(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?;
-
+    let db = get_db(depot)?;
+    let menus = fetch_all_menus(db.as_ref()).await?;
     Ok(Json(ApiResponse::success(
-        menus.into_iter().map(|m| model_to_response(&m)).collect(),
+        menus.iter().map(model_to_response).collect(),
     )))
 }
 
-/// 获取当前用户的菜单（根据角色权限）
-#[endpoint(
-    tags("菜单管理"),
-    responses(
-        (status_code = 200, description = "获取成功"),
-        (status_code = 401, description = "未授权"),
-        (status_code = 500, description = "服务器错误")
-    )
-)]
+#[endpoint(tags("菜单管理"))]
 pub async fn get_user_menus(
     depot: &Depot,
 ) -> Result<Json<ApiResponse<Vec<MenuTreeResponse>>>, AppError> {
-    let role_id_str = depot
-        .get::<String>("role_id")
-        .map_err(|_| AppError::Unauthorized)?;
+    let role_id = get_current_role_id(depot)?;
+    let db = get_db(depot)?;
+    let menus = fetch_all_menus(db.as_ref()).await?;
 
-    let role_id = Uuid::parse_str(role_id_str.as_str()).map_err(|_| AppError::Unauthorized)?;
+    if is_super_admin_role_id(role_id)? {
+        let route_menus: Vec<menu::Model> = menus
+            .into_iter()
+            .filter(is_route_menu)
+            .collect();
 
-    let db = depot
-        .get::<Arc<DatabaseConnection>>("db")
-        .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
+        return Ok(Json(ApiResponse::success(build_menu_tree_for_route(
+            &route_menus, None,
+        ))));
+    }
 
-    // 查询角色关联的菜单
     let role_menus = role_menu::Entity::find()
         .filter(role_menu::Column::RoleId.eq(role_id))
         .find_also_related(menu::Entity)
         .all(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?;
+        .await?;
 
-    // 过滤出有效的菜单（已启用、显示）
-    let menus: Vec<menu::Model> = role_menus
+    let assigned_ids: HashSet<Uuid> = role_menus
         .into_iter()
-        .filter_map(|(_, m)| m)
-        .filter(|m| m.deleted_time.is_none() && m.status == 1 && m.is_show)
+        .filter_map(|(_, menu_item)| menu_item)
+        .filter(|item| item.deleted_time.is_none() && is_route_menu(item))
+        .map(|item| item.id)
         .collect();
 
-    let tree = build_menu_tree_for_route(&menus, None);
-    Ok(Json(ApiResponse::success(tree)))
+    Ok(Json(ApiResponse::success(build_assigned_menu_tree_for_route(
+        &menus,
+        &assigned_ids,
+        None,
+    ))))
 }
 
-/// 获取当前用户的权限列表
-#[endpoint(
-    tags("菜单管理"),
-    responses(
-        (status_code = 200, description = "获取成功"),
-        (status_code = 401, description = "未授权"),
-        (status_code = 500, description = "服务器错误")
-    )
-)]
+#[endpoint(tags("菜单管理"))]
 pub async fn get_user_permissions(
     depot: &Depot,
 ) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
-    let role_id_str = depot
-        .get::<String>("role_id")
-        .map_err(|_| AppError::Unauthorized)?;
+    let role_id = get_current_role_id(depot)?;
+    let db = get_db(depot)?;
 
-    let role_id = Uuid::parse_str(role_id_str.as_str()).map_err(|_| AppError::Unauthorized)?;
+    let permissions = if is_super_admin_role_id(role_id)? {
+        fetch_all_menus(db.as_ref())
+            .await?
+            .into_iter()
+            .filter(|item| item.status == 1)
+            .filter_map(|item| item.permission)
+            .collect()
+    } else {
+        let role_menus = role_menu::Entity::find()
+            .filter(role_menu::Column::RoleId.eq(role_id))
+            .find_also_related(menu::Entity)
+            .all(db.as_ref())
+            .await?;
 
-    let db = depot
-        .get::<Arc<DatabaseConnection>>("db")
-        .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
-
-    let role_menus = role_menu::Entity::find()
-        .filter(role_menu::Column::RoleId.eq(role_id))
-        .find_also_related(menu::Entity)
-        .all(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?;
-
-    let permissions: Vec<String> = role_menus
-        .into_iter()
-        .filter_map(|(_, m)| m)
-        .filter(|m| m.deleted_time.is_none() && m.status == 1)
-        .filter_map(|m| m.permission)
-        .collect();
+        role_menus
+            .into_iter()
+            .filter_map(|(_, menu_item)| menu_item)
+            .filter(|item| item.deleted_time.is_none() && item.status == 1)
+            .filter_map(|item| item.permission)
+            .collect()
+    };
 
     Ok(Json(ApiResponse::success(permissions)))
 }
 
-/// 获取单个菜单详情
-#[endpoint(
-    tags("菜单管理"),
-    responses(
-        (status_code = 200, description = "获取成功"),
-        (status_code = 404, description = "菜单不存在"),
-        (status_code = 500, description = "服务器错误")
-    )
-)]
+#[endpoint(tags("菜单管理"))]
+pub async fn get_button_options(
+    depot: &Depot,
+) -> Result<Json<ApiResponse<Vec<ButtonOptionResponse>>>, AppError> {
+    let db = get_db(depot)?;
+    let menus = fetch_all_menus(db.as_ref()).await?;
+    let menu_map: HashMap<Uuid, &menu::Model> = menus.iter().map(|item| (item.id, item)).collect();
+
+    let data = menus
+        .iter()
+        .filter(|item| item.menu_type == "button")
+        .map(|item| ButtonOptionResponse {
+            id: item.id.to_string(),
+            label: build_button_label(item, &menu_map),
+            code: item.permission.clone().unwrap_or_default(),
+        })
+        .collect();
+
+    Ok(Json(ApiResponse::success(data)))
+}
+
+#[endpoint(tags("菜单管理"))]
 pub async fn get_menu(
     id: PathParam<String>,
     depot: &Depot,
 ) -> Result<Json<ApiResponse<MenuResponse>>, AppError> {
-    let menu_id = Uuid::parse_str(&id.into_inner())
-        .map_err(|_| AppError::BadRequest("无效的菜单ID".to_string()))?;
+    let db = get_db(depot)?;
+    let menu_id = parse_uuid(id.into_inner().as_str(), "无效的菜单ID")?;
 
-    let db = depot
-        .get::<Arc<DatabaseConnection>>("db")
-        .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
-
-    let menu = menu::Entity::find_by_id(menu_id)
-        .filter(menu::Column::DeletedTime.is_null())
+    let menu_item = menu::Entity::find_by_id(menu_id)
         .one(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?
-        .ok_or(AppError::NotFound("菜单不存在".to_string()))?;
+        .await?
+        .ok_or_else(|| AppError::NotFound("菜单不存在".to_string()))?;
 
-    Ok(Json(ApiResponse::success(model_to_response(&menu))))
+    Ok(Json(ApiResponse::success(model_to_response(&menu_item))))
 }
 
-/// 创建菜单
-#[endpoint(
-    tags("菜单管理"),
-    responses(
-        (status_code = 200, description = "创建成功"),
-        (status_code = 400, description = "参数错误"),
-        (status_code = 500, description = "服务器错误")
-    )
-)]
+#[endpoint(tags("菜单管理"))]
 pub async fn create_menu(
     req: JsonBody<CreateMenuRequest>,
     depot: &Depot,
 ) -> Result<Json<ApiResponse<MenuResponse>>, AppError> {
+    let db = get_db(depot)?;
+    let current_user_id = get_current_user_id(depot).ok();
     let data = req.into_inner();
 
-    // 验证菜单类型
-    if !["catalog", "menu", "button"].contains(&data.menu_type.as_str()) {
-        return Err(AppError::BadRequest("无效的菜单类型".to_string()));
-    }
-
-    let db = depot
-        .get::<Arc<DatabaseConnection>>("db")
-        .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
-
-    let user_id = depot
-        .get::<String>("user_id")
-        .ok()
-        .and_then(|s| Uuid::parse_str(s.as_str()).ok());
-
+    validate_menu_type(&data.menu_type)?;
     let parent_id = data
         .parent_id
-        .as_ref()
-        .map(|s| Uuid::parse_str(s))
-        .transpose()
-        .map_err(|_| AppError::BadRequest("无效的父菜单ID".to_string()))?;
-
+        .as_deref()
+        .map(|value| parse_uuid(value, "无效的父级菜单ID"))
+        .transpose()?;
+    validate_parent_assignment(db.as_ref(), parent_id, &data.menu_type, None).await?;
     let now = Utc::now().naive_utc();
+
     let new_menu = menu::ActiveModel {
         id: Set(Uuid::new_v4()),
         parent_id: Set(parent_id),
         name: Set(data.name),
         menu_type: Set(data.menu_type),
-        path: Set(data.path),
-        component: Set(data.component),
-        icon: Set(data.icon),
-        permission: Set(data.permission),
+        path: Set(normalize_optional(data.path)),
+        component: Set(normalize_optional(data.component)),
+        icon: Set(normalize_optional(data.icon)),
+        permission: Set(normalize_optional(data.permission)),
         sort: Set(data.sort),
         is_show: Set(data.is_show),
         is_cache: Set(data.is_cache),
         is_external: Set(data.is_external),
         status: Set(1),
         created_time: Set(now),
-        created_id: Set(user_id),
+        created_id: Set(current_user_id),
         updated_time: Set(now),
-        updated_id: Set(user_id),
+        updated_id: Set(current_user_id),
         deleted_time: Set(None),
         deleted_id: Set(None),
     };
 
-    let menu = new_menu
-        .insert(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?;
+    let created = new_menu.insert(db.as_ref()).await?;
 
     Ok(Json(ApiResponse::success_with_message(
-        model_to_response(&menu),
-        "创建成功".to_string(),
+        model_to_response(&created),
+        "创建菜单成功".to_string(),
     )))
 }
 
-/// 更新菜单
-#[endpoint(
-    tags("菜单管理"),
-    responses(
-        (status_code = 200, description = "更新成功"),
-        (status_code = 404, description = "菜单不存在"),
-        (status_code = 500, description = "服务器错误")
-    )
-)]
+#[endpoint(tags("菜单管理"))]
 pub async fn update_menu(
     id: PathParam<String>,
     req: JsonBody<UpdateMenuRequest>,
     depot: &Depot,
 ) -> Result<Json<ApiResponse<MenuResponse>>, AppError> {
-    let menu_id = Uuid::parse_str(&id.into_inner())
-        .map_err(|_| AppError::BadRequest("无效的菜单ID".to_string()))?;
-
+    let db = get_db(depot)?;
+    let current_user_id = get_current_user_id(depot).ok();
+    let menu_id = parse_uuid(id.into_inner().as_str(), "无效的菜单ID")?;
     let data = req.into_inner();
 
-    let db = depot
-        .get::<Arc<DatabaseConnection>>("db")
-        .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
-
-    let user_id = depot
-        .get::<String>("user_id")
-        .ok()
-        .and_then(|s| Uuid::parse_str(s.as_str()).ok());
-
     let existing = menu::Entity::find_by_id(menu_id)
-        .filter(menu::Column::DeletedTime.is_null())
         .one(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?
-        .ok_or(AppError::NotFound("菜单不存在".to_string()))?;
+        .await?
+        .ok_or_else(|| AppError::NotFound("菜单不存在".to_string()))?;
+
+    let next_parent_id = match data.parent_id.as_deref() {
+        Some(parent_id) if parent_id.trim().is_empty() => None,
+        Some(parent_id) => Some(parse_uuid(parent_id, "无效的父级菜单ID")?),
+        None => existing.parent_id,
+    };
+    let next_menu_type = data
+        .menu_type
+        .clone()
+        .unwrap_or_else(|| existing.menu_type.clone());
+    validate_parent_assignment(db.as_ref(), next_parent_id, &next_menu_type, Some(existing.id))
+        .await?;
 
     let mut active_model: menu::ActiveModel = existing.into();
 
     if let Some(parent_id) = data.parent_id {
-        let pid = if parent_id.is_empty() {
+        let parent_id = if parent_id.trim().is_empty() {
             None
         } else {
-            Some(
-                Uuid::parse_str(&parent_id)
-                    .map_err(|_| AppError::BadRequest("无效的父菜单ID".to_string()))?,
-            )
+            Some(parse_uuid(&parent_id, "无效的父级菜单ID")?)
         };
-        active_model.parent_id = Set(pid);
+        active_model.parent_id = Set(parent_id);
     }
     if let Some(name) = data.name {
         active_model.name = Set(name);
     }
     if let Some(menu_type) = data.menu_type {
-        if !["catalog", "menu", "button"].contains(&menu_type.as_str()) {
-            return Err(AppError::BadRequest("无效的菜单类型".to_string()));
-        }
+        validate_menu_type(&menu_type)?;
         active_model.menu_type = Set(menu_type);
     }
     if data.path.is_some() {
-        active_model.path = Set(data.path);
+        active_model.path = Set(normalize_optional(data.path));
     }
     if data.component.is_some() {
-        active_model.component = Set(data.component);
+        active_model.component = Set(normalize_optional(data.component));
     }
     if data.icon.is_some() {
-        active_model.icon = Set(data.icon);
+        active_model.icon = Set(normalize_optional(data.icon));
     }
     if data.permission.is_some() {
-        active_model.permission = Set(data.permission);
+        active_model.permission = Set(normalize_optional(data.permission));
     }
     if let Some(sort) = data.sort {
         active_model.sort = Set(sort);
@@ -331,94 +269,230 @@ pub async fn update_menu(
     }
 
     active_model.updated_time = Set(Utc::now().naive_utc());
-    active_model.updated_id = Set(user_id);
+    active_model.updated_id = Set(current_user_id);
 
-    let updated = active_model
-        .update(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?;
+    let updated = active_model.update(db.as_ref()).await?;
 
     Ok(Json(ApiResponse::success_with_message(
         model_to_response(&updated),
-        "更新成功".to_string(),
+        "更新菜单成功".to_string(),
     )))
 }
 
-/// 删除菜单（软删除）
-#[endpoint(
-    tags("菜单管理"),
-    responses(
-        (status_code = 200, description = "删除成功"),
-        (status_code = 404, description = "菜单不存在"),
-        (status_code = 500, description = "服务器错误")
-    )
-)]
+#[endpoint(tags("菜单管理"))]
 pub async fn delete_menu(
     id: PathParam<String>,
     depot: &Depot,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let menu_id = Uuid::parse_str(&id.into_inner())
-        .map_err(|_| AppError::BadRequest("无效的菜单ID".to_string()))?;
+    let db = get_db(depot)?;
+    let menu_id = parse_uuid(id.into_inner().as_str(), "无效的菜单ID")?;
 
-    let db = depot
-        .get::<Arc<DatabaseConnection>>("db")
-        .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
-
-    let user_id = depot
-        .get::<String>("user_id")
-        .ok()
-        .and_then(|s| Uuid::parse_str(s.as_str()).ok());
-
-    let existing = menu::Entity::find_by_id(menu_id)
-        .filter(menu::Column::DeletedTime.is_null())
+    let exists = menu::Entity::find_by_id(menu_id)
         .one(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?
-        .ok_or(AppError::NotFound("菜单不存在".to_string()))?;
+        .await?
+        .is_some();
+    if !exists {
+        return Err(AppError::NotFound("菜单不存在".to_string()));
+    }
 
-    let mut active_model: menu::ActiveModel = existing.into();
-    active_model.deleted_time = Set(Some(Utc::now().naive_utc()));
-    active_model.deleted_id = Set(user_id);
-
-    active_model
-        .update(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?;
+    menu::Entity::delete_by_id(menu_id)
+        .exec(db.as_ref())
+        .await?;
 
     Ok(Json(ApiResponse::success_with_message(
         (),
-        "删除成功".to_string(),
+        "删除菜单成功".to_string(),
     )))
 }
 
-// ========== 辅助函数 ==========
+#[endpoint(tags("菜单管理"))]
+pub async fn batch_delete_menus(
+    req: JsonBody<BatchDeleteMenusRequest>,
+    depot: &Depot,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let db = get_db(depot)?;
+    let ids = req.into_inner().ids;
+    if ids.is_empty() {
+        return Err(AppError::BadRequest("请选择要删除的菜单".to_string()));
+    }
 
-fn model_to_response(m: &menu::Model) -> MenuResponse {
+    let menu_ids = ids
+        .iter()
+        .map(|item| parse_uuid(item, "存在无效的菜单ID"))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    menu::Entity::delete_many()
+        .filter(menu::Column::Id.is_in(menu_ids))
+        .exec(db.as_ref())
+        .await?;
+
+    Ok(Json(ApiResponse::success_with_message(
+        (),
+        "批量删除菜单成功".to_string(),
+    )))
+}
+
+async fn fetch_all_menus(db: &DatabaseConnection) -> Result<Vec<menu::Model>, AppError> {
+    Ok(menu::Entity::find()
+        .filter(menu::Column::DeletedTime.is_null())
+        .order_by_asc(menu::Column::Sort)
+        .all(db)
+        .await?)
+}
+
+fn get_db(depot: &Depot) -> Result<Arc<DatabaseConnection>, AppError> {
+    depot
+        .get::<Arc<DatabaseConnection>>("db")
+        .cloned()
+        .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))
+}
+
+fn get_current_role_id(depot: &Depot) -> Result<Uuid, AppError> {
+    let role_id = depot
+        .get::<String>("role_id")
+        .map_err(|_| AppError::Unauthorized)?;
+    parse_uuid(role_id.as_str(), "当前角色信息无效")
+}
+
+fn get_current_user_id(depot: &Depot) -> Result<Uuid, AppError> {
+    let user_id = depot
+        .get::<String>("user_id")
+        .map_err(|_| AppError::Unauthorized)?;
+    parse_uuid(user_id.as_str(), "当前用户信息无效")
+}
+
+fn parse_uuid(value: &str, message: &str) -> Result<Uuid, AppError> {
+    Uuid::parse_str(value).map_err(|_| AppError::BadRequest(message.to_string()))
+}
+
+fn is_super_admin_role_id(role_id: Uuid) -> Result<bool, AppError> {
+    let super_admin_role_id = Uuid::parse_str(SUPER_ADMIN_ROLE_ID)
+        .map_err(|_| AppError::InternalServerError("绯荤粺瑙掕壊閰嶇疆閿欒".to_string()))?;
+
+    Ok(role_id == super_admin_role_id)
+}
+
+fn validate_menu_type(value: &str) -> Result<(), AppError> {
+    if ["catalog", "menu", "button"].contains(&value) {
+        Ok(())
+    } else {
+        Err(AppError::BadRequest("无效的菜单类型".to_string()))
+    }
+}
+
+fn normalize_optional(value: Option<String>) -> Option<String> {
+    value
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+}
+
+async fn validate_parent_assignment<C>(
+    db: &C,
+    parent_id: Option<Uuid>,
+    menu_type: &str,
+    current_menu_id: Option<Uuid>,
+) -> Result<(), AppError>
+where
+    C: ConnectionTrait,
+{
+    let Some(parent_id) = parent_id else {
+        return Ok(());
+    };
+
+    if Some(parent_id) == current_menu_id {
+        return Err(AppError::BadRequest("父级菜单不能选择自己".to_string()));
+    }
+
+    let menus = menu::Entity::find()
+        .filter(menu::Column::DeletedTime.is_null())
+        .all(db)
+        .await?;
+    let menu_map: HashMap<Uuid, &menu::Model> = menus.iter().map(|item| (item.id, item)).collect();
+    let parent_item = menu_map
+        .get(&parent_id)
+        .copied()
+        .ok_or_else(|| AppError::BadRequest("父级菜单不存在".to_string()))?;
+
+    if parent_item.menu_type == "button" {
+        return Err(AppError::BadRequest("按钮节点不能作为父级菜单".to_string()));
+    }
+
+    if menu_type == "catalog" && parent_item.menu_type != "catalog" {
+        return Err(AppError::BadRequest("目录只能挂载到目录节点下".to_string()));
+    }
+
+    if menu_type == "button" && parent_item.menu_type != "menu" {
+        return Err(AppError::BadRequest("按钮只能挂载到菜单节点下".to_string()));
+    }
+
+    if let Some(current_menu_id) = current_menu_id {
+        let mut descendants = HashSet::new();
+        let mut pending = vec![current_menu_id];
+
+        while let Some(menu_id) = pending.pop() {
+            for child in menus.iter().filter(|item| item.parent_id == Some(menu_id)) {
+                if descendants.insert(child.id) {
+                    pending.push(child.id);
+                }
+            }
+        }
+
+        if descendants.contains(&parent_id) {
+            return Err(AppError::BadRequest(
+                "父级菜单不能选择当前菜单的子节点".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn model_to_response(item: &menu::Model) -> MenuResponse {
     MenuResponse {
-        id: m.id.to_string(),
-        parent_id: m.parent_id.map(|id| id.to_string()),
-        name: m.name.clone(),
-        menu_type: m.menu_type.clone(),
-        path: m.path.clone(),
-        component: m.component.clone(),
-        icon: m.icon.clone(),
-        permission: m.permission.clone(),
-        sort: m.sort,
-        is_show: m.is_show,
-        is_cache: m.is_cache,
-        is_external: m.is_external,
-        status: m.status,
+        id: item.id.to_string(),
+        parent_id: item.parent_id.map(|id| id.to_string()),
+        name: item.name.clone(),
+        menu_type: item.menu_type.clone(),
+        path: item.path.clone(),
+        component: item.component.clone(),
+        icon: item.icon.clone(),
+        permission: item.permission.clone(),
+        sort: item.sort,
+        is_show: item.is_show,
+        is_cache: item.is_cache,
+        is_external: item.is_external,
+        status: item.status,
         children: None,
+    }
+}
+
+fn model_to_route_response(item: &menu::Model, children: Vec<MenuTreeResponse>) -> MenuTreeResponse {
+    MenuTreeResponse {
+        id: item.id.to_string(),
+        name: item.name.clone(),
+        menu_type: item.menu_type.clone(),
+        path: item.path.clone(),
+        component: item.component.clone(),
+        icon: item.icon.clone(),
+        sort: item.sort,
+        is_show: item.is_show,
+        is_cache: item.is_cache,
+        is_external: item.is_external,
+        children: if children.is_empty() {
+            None
+        } else {
+            Some(children)
+        },
     }
 }
 
 fn build_menu_tree(menus: &[menu::Model], parent_id: Option<Uuid>) -> Vec<MenuResponse> {
     let mut result: Vec<MenuResponse> = menus
         .iter()
-        .filter(|m| m.parent_id == parent_id)
-        .map(|m| {
-            let children = build_menu_tree(menus, Some(m.id));
-            let mut response = model_to_response(m);
+        .filter(|item| item.parent_id == parent_id)
+        .map(|item| {
+            let children = build_menu_tree(menus, Some(item.id));
+            let mut response = model_to_response(item);
             if !children.is_empty() {
                 response.children = Some(children);
             }
@@ -426,7 +500,7 @@ fn build_menu_tree(menus: &[menu::Model], parent_id: Option<Uuid>) -> Vec<MenuRe
         })
         .collect();
 
-    result.sort_by_key(|m| m.sort);
+    result.sort_by_key(|item| item.sort);
     result
 }
 
@@ -434,10 +508,9 @@ fn build_menu_tree_for_route(
     menus: &[menu::Model],
     parent_id: Option<Uuid>,
 ) -> Vec<MenuTreeResponse> {
-    // 构建父子关系映射
     let mut children_map: HashMap<Option<Uuid>, Vec<&menu::Model>> = HashMap::new();
-    for m in menus {
-        children_map.entry(m.parent_id).or_default().push(m);
+    for item in menus {
+        children_map.entry(item.parent_id).or_default().push(item);
     }
 
     fn build_recursive(
@@ -449,30 +522,79 @@ fn build_menu_tree_for_route(
             .map(|children| {
                 children
                     .iter()
-                    .map(|m| {
-                        let sub_children = build_recursive(children_map, Some(m.id));
-                        MenuTreeResponse {
-                            id: m.id.to_string(),
-                            name: m.name.clone(),
-                            menu_type: m.menu_type.clone(),
-                            path: m.path.clone(),
-                            component: m.component.clone(),
-                            icon: m.icon.clone(),
-                            sort: m.sort,
-                            children: if sub_children.is_empty() {
-                                None
-                            } else {
-                                Some(sub_children)
-                            },
-                        }
+                    .map(|item| {
+                        let sub_children = build_recursive(children_map, Some(item.id));
+                        model_to_route_response(item, sub_children)
                     })
                     .collect()
             })
             .unwrap_or_default();
 
-        result.sort_by_key(|m| m.sort);
+        result.sort_by_key(|item| item.sort);
         result
     }
 
     build_recursive(&children_map, parent_id)
+}
+
+fn build_assigned_menu_tree_for_route(
+    menus: &[menu::Model],
+    assigned_ids: &HashSet<Uuid>,
+    parent_id: Option<Uuid>,
+) -> Vec<MenuTreeResponse> {
+    let mut children_map: HashMap<Option<Uuid>, Vec<&menu::Model>> = HashMap::new();
+    for item in menus {
+        children_map.entry(item.parent_id).or_default().push(item);
+    }
+
+    fn build_recursive(
+        children_map: &HashMap<Option<Uuid>, Vec<&menu::Model>>,
+        assigned_ids: &HashSet<Uuid>,
+        parent_id: Option<Uuid>,
+    ) -> Vec<MenuTreeResponse> {
+        let mut result: Vec<MenuTreeResponse> = children_map
+            .get(&parent_id)
+            .map(|children| {
+                children
+                    .iter()
+                    .filter_map(|item| {
+                        let sub_children =
+                            build_recursive(children_map, assigned_ids, Some(item.id));
+                        let matched = assigned_ids.contains(&item.id);
+                        if !is_route_menu(item) || (!matched && sub_children.is_empty()) {
+                            return None;
+                        }
+
+                        Some(model_to_route_response(item, sub_children))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        result.sort_by_key(|item| item.sort);
+        result
+    }
+
+    build_recursive(&children_map, assigned_ids, parent_id)
+}
+
+fn is_route_menu(item: &menu::Model) -> bool {
+    item.status == 1 && item.menu_type != "button"
+}
+
+fn build_button_label(item: &menu::Model, menu_map: &HashMap<Uuid, &menu::Model>) -> String {
+    let mut labels = vec![item.name.clone()];
+    let mut current_parent_id = item.parent_id;
+
+    while let Some(parent_id) = current_parent_id {
+        if let Some(parent) = menu_map.get(&parent_id) {
+            labels.push(parent.name.clone());
+            current_parent_id = parent.parent_id;
+        } else {
+            break;
+        }
+    }
+
+    labels.reverse();
+    labels.join(" / ")
 }

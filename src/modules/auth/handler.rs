@@ -1,18 +1,109 @@
 use salvo::http::cookie::{Cookie, SameSite};
 use salvo::oapi::extract::JsonBody;
 use salvo::prelude::*;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
+use sea_orm::{ColumnTrait, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::common::{crypto, jwt::JwtService, rsa_crypto, ApiResponse, AppError};
-use crate::models::{role, user, user_role};
 use super::dto::{
     LoginRequest, LoginResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest,
     SwitchRoleRequest, SwitchRoleResponse, UserInfoResponse, UserRole,
 };
+use crate::common::{crypto, jwt::JwtService, rsa_crypto, ApiResponse, AppError};
+use crate::models::{role, user, user_role};
 
-/// 用户登录
+fn get_db(depot: &Depot) -> Result<Arc<DatabaseConnection>, AppError> {
+    depot
+        .get::<Arc<DatabaseConnection>>("db")
+        .cloned()
+        .map_err(|_| AppError::InternalServerError("数据库服务不可用，请稍后重试".to_string()))
+}
+
+fn get_jwt_service(depot: &Depot) -> Arc<JwtService> {
+    depot.get::<Arc<JwtService>>("jwt_service").unwrap().clone()
+}
+
+fn parse_uuid(value: &str, message: &str) -> Result<Uuid, AppError> {
+    Uuid::parse_str(value).map_err(|_| AppError::BadRequest(message.to_string()))
+}
+
+fn role_is_available(role_item: &role::Model) -> bool {
+    role_item.deleted_time.is_none() && role_item.status == 1
+}
+
+fn to_user_role(role_item: &role::Model) -> UserRole {
+    UserRole {
+        role_id: role_item.id.to_string(),
+        role_code: role_item.code.clone(),
+        role_name: role_item.name.clone(),
+    }
+}
+
+async fn ensure_active_user<C>(db: &C, user_id: Uuid) -> Result<user::Model, AppError>
+where
+    C: ConnectionTrait,
+{
+    let user_item = user::Entity::find_by_id(user_id)
+        .one(db)
+        .await?
+        .ok_or(AppError::Unauthorized)?;
+
+    if user_item.deleted_time.is_some() || user_item.status != 1 {
+        return Err(AppError::Forbidden("当前用户已被禁用或删除".to_string()));
+    }
+
+    Ok(user_item)
+}
+
+async fn get_available_roles_for_user<C>(db: &C, user_id: Uuid) -> Result<Vec<role::Model>, AppError>
+where
+    C: ConnectionTrait,
+{
+    let roles: Vec<role::Model> = user_role::Entity::find()
+        .filter(user_role::Column::UserId.eq(user_id))
+        .find_also_related(role::Entity)
+        .all(db)
+        .await?
+        .into_iter()
+        .filter_map(|(_, role_opt)| role_opt)
+        .filter(role_is_available)
+        .collect();
+
+    if roles.is_empty() {
+        return Err(AppError::Forbidden("用户没有可用角色".to_string()));
+    }
+
+    Ok(roles)
+}
+
+async fn ensure_active_user_role<C>(
+    db: &C,
+    user_id: Uuid,
+    role_id: Uuid,
+) -> Result<role::Model, AppError>
+where
+    C: ConnectionTrait,
+{
+    ensure_active_user(db, user_id).await?;
+
+    let user_role_with_role = user_role::Entity::find()
+        .filter(user_role::Column::UserId.eq(user_id))
+        .filter(user_role::Column::RoleId.eq(role_id))
+        .find_also_related(role::Entity)
+        .one(db)
+        .await?;
+
+    let (_, role_opt) =
+        user_role_with_role.ok_or(AppError::Forbidden("用户没有该角色权限".to_string()))?;
+    let role_item = role_opt.ok_or(AppError::Forbidden("当前角色不存在".to_string()))?;
+
+    if !role_is_available(&role_item) {
+        return Err(AppError::Forbidden("当前角色已被禁用或删除".to_string()));
+    }
+
+    Ok(role_item)
+}
+
 #[endpoint(
     tags("认证"),
     responses(
@@ -27,115 +118,73 @@ pub async fn login(
     res: &mut Response,
 ) -> Result<Json<ApiResponse<LoginResponse>>, AppError> {
     let login_data = req.into_inner();
+    let db = get_db(depot)?;
+    let jwt_service = get_jwt_service(depot);
 
-    let db = match depot.get::<Arc<DatabaseConnection>>("db") {
-        Ok(db) => db,
-        Err(_) => {
-            tracing::error!("数据库连接不可用，无法处理登录请求");
-            return Err(AppError::InternalServerError(
-                "数据库服务不可用，请稍后重试".to_string()
-            ));
-        }
-    };
-
-    let jwt_service = depot.get::<Arc<JwtService>>("jwt_service").unwrap();
-
-    // 首先查找用户，不限制状态和删除状态，方便给出更明确的错误提示。
     let find_user = user::Entity::find()
         .filter(user::Column::Username.eq(&login_data.username))
         .one(db.as_ref())
         .await
         .map_err(|e| AppError::InternalServerError(e.to_string()))?;
 
-    let user = match find_user {
-        Some(u) => u,
+    let user_item = match find_user {
+        Some(user_item) => user_item,
         None => {
             tracing::warn!("登录失败：用户名 '{}' 不存在", login_data.username);
             return Err(AppError::BadRequest("用户账号不存在".to_string()));
         }
     };
 
-    if user.deleted_time.is_some() {
+    if user_item.deleted_time.is_some() {
         tracing::warn!("登录失败：用户 '{}' 已被删除", login_data.username);
-        return Err(AppError::BadRequest("该账号已被删除，无法登录".to_string()));
+        return Err(AppError::BadRequest("该账户已被删除，无法登录".to_string()));
     }
 
-    if user.status != 1 {
+    if user_item.status != 1 {
         tracing::warn!(
-            "登录失败：用户 '{}' 账号已被禁用，状态: {}",
+            "登录失败：用户 '{}' 已被禁用，状态 {}",
             login_data.username,
-            user.status
+            user_item.status
         );
-        return Err(AppError::BadRequest("该账号已被禁用，请联系管理员".to_string()));
+        return Err(AppError::BadRequest(
+            "该账户已被禁用，请联系管理员".to_string(),
+        ));
     }
 
     let plain_password = if login_data.is_encrypted {
-        tracing::debug!("密码已加密，开始 RSA 解密...");
         match rsa_crypto::decrypt_password(&login_data.password) {
-            Ok(pwd) => {
-                tracing::debug!("RSA 密码解密成功");
-                pwd
-            }
-            Err(e) => {
-                tracing::error!("RSA 密码解密失败: {}", e);
-                return Err(e);
+            Ok(password) => password,
+            Err(error) => {
+                tracing::error!("RSA 密码解密失败: {}", error);
+                return Err(error);
             }
         }
     } else {
-        tracing::warn!("使用明文密码登录，请确认当前为测试环境");
+        tracing::warn!("当前使用明文密码登录，仅建议在测试环境中使用");
         login_data.password.clone()
     };
 
-    let password_valid = crypto::verify_password(&plain_password, &user.password)?;
-
+    let password_valid = crypto::verify_password(&plain_password, &user_item.password)?;
     if !password_valid {
         tracing::warn!("登录失败：用户 '{}' 密码错误", login_data.username);
         return Err(AppError::BadRequest("密码错误".to_string()));
     }
 
-    let user_roles = user_role::Entity::find()
-        .filter(user_role::Column::UserId.eq(user.id))
-        .find_also_related(role::Entity)
-        .all(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?;
-
-    if user_roles.is_empty() {
-        return Err(AppError::Forbidden("用户没有分配角色".to_string()));
-    }
-
-    let roles: Vec<UserRole> = user_roles
-        .iter()
-        .filter_map(|(_, role_opt)| {
-            role_opt.as_ref().map(|r| UserRole {
-                role_id: r.id.to_string(),
-                role_code: r.code.clone(),
-                role_name: r.name.clone(),
-            })
-        })
-        .collect();
-
+    let available_roles = get_available_roles_for_user(db.as_ref(), user_item.id).await?;
     let selected_role = if let Some(role_id_str) = &login_data.role_id {
-        let role_id = Uuid::parse_str(role_id_str)
-            .map_err(|_| AppError::BadRequest("无效的角色ID".to_string()))?;
-
-        user_roles
-            .iter()
-            .find(|(ur, _)| ur.role_id == role_id)
-            .and_then(|(_, r)| r.as_ref())
-            .ok_or(AppError::Forbidden("用户没有该角色权限".to_string()))?
+        let role_id = parse_uuid(role_id_str, "无效的角色ID")?;
+        ensure_active_user_role(db.as_ref(), user_item.id, role_id).await?
     } else {
-        user_roles[0].1.as_ref().unwrap()
+        available_roles[0].clone()
     };
 
     let access_token = jwt_service.generate_access_token(
-        user.id,
+        user_item.id,
         selected_role.id,
         selected_role.code.clone(),
     )?;
-
     let refresh_token_value = jwt_service.generate_refresh_token(
-        user.id,
+        user_item.id,
         selected_role.id,
         selected_role.code.clone(),
     )?;
@@ -147,10 +196,10 @@ pub async fn login(
     res.add_cookie(cookie);
 
     let response = LoginResponse {
-        id: user.id.to_string(),
-        username: user.username,
-        real_name: user.real_name,
-        roles,
+        id: user_item.id.to_string(),
+        username: user_item.username,
+        real_name: user_item.real_name,
+        roles: available_roles.iter().map(to_user_role).collect(),
         access_token,
         refresh_token: refresh_token_value,
     };
@@ -158,7 +207,6 @@ pub async fn login(
     Ok(Json(ApiResponse::success(response)))
 }
 
-/// 用户注册
 #[endpoint(tags("认证"))]
 pub async fn register(
     req: JsonBody<RegisterRequest>,
@@ -166,17 +214,12 @@ pub async fn register(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let _register_data = req.into_inner();
 
-    // TODO: 实现用户注册逻辑
-    // 1. 验证用户名和邮箱是否已存在
-    // 2. 对密码进行哈希处理
-    // 3. 保存到数据库
     Ok(Json(ApiResponse::success_with_message(
         serde_json::json!({}),
-        "注册成功".to_string()
+        "注册成功".to_string(),
     )))
 }
 
-/// 用户登出
 #[endpoint(tags("认证"))]
 pub async fn logout(res: &mut Response) -> Json<ApiResponse<serde_json::Value>> {
     let mut cookie = Cookie::new("refresh_token", "");
@@ -186,11 +229,10 @@ pub async fn logout(res: &mut Response) -> Json<ApiResponse<serde_json::Value>> 
 
     Json(ApiResponse::success_with_message(
         serde_json::json!({}),
-        "登出成功".to_string()
+        "登出成功".to_string(),
     ))
 }
 
-/// 刷新 token
 #[endpoint(tags("认证"))]
 pub async fn refresh_token(
     req: JsonBody<RefreshTokenRequest>,
@@ -199,11 +241,16 @@ pub async fn refresh_token(
     res: &mut Response,
 ) -> Result<Json<ApiResponse<RefreshTokenResponse>>, AppError> {
     let req_data = req.into_inner();
-    let jwt_service = depot.get::<Arc<JwtService>>("jwt_service").unwrap();
+    let db = get_db(depot)?;
+    let jwt_service = get_jwt_service(depot);
 
     let refresh_token_value = req_data
         .refresh_token
-        .or_else(|| req_raw.cookie("refresh_token").map(|c| c.value().to_string()))
+        .or_else(|| {
+            req_raw
+                .cookie("refresh_token")
+                .map(|cookie| cookie.value().to_string())
+        })
         .ok_or(AppError::Unauthorized)?;
 
     let claims = jwt_service.validate_token(&refresh_token_value)?;
@@ -213,11 +260,14 @@ pub async fn refresh_token(
 
     let user_id = Uuid::parse_str(&claims.sub).map_err(|_| AppError::Unauthorized)?;
     let role_id = Uuid::parse_str(&claims.role_id).map_err(|_| AppError::Unauthorized)?;
+    let role_item = ensure_active_user_role(db.as_ref(), user_id, role_id)
+        .await
+        .map_err(|_| AppError::Unauthorized)?;
 
     let access_token =
-        jwt_service.generate_access_token(user_id, role_id, claims.role_code.clone())?;
+        jwt_service.generate_access_token(user_id, role_item.id, role_item.code.clone())?;
     let new_refresh_token =
-        jwt_service.generate_refresh_token(user_id, role_id, claims.role_code)?;
+        jwt_service.generate_refresh_token(user_id, role_item.id, role_item.code.clone())?;
 
     let mut cookie = Cookie::new("refresh_token", new_refresh_token.clone());
     cookie.set_path("/");
@@ -231,7 +281,6 @@ pub async fn refresh_token(
     })))
 }
 
-/// 切换角色
 #[endpoint(tags("认证"))]
 pub async fn switch_role(
     req: JsonBody<SwitchRoleRequest>,
@@ -239,45 +288,21 @@ pub async fn switch_role(
     res: &mut Response,
 ) -> Result<Json<ApiResponse<SwitchRoleResponse>>, AppError> {
     let switch_data = req.into_inner();
-
-    let db = match depot.get::<Arc<DatabaseConnection>>("db") {
-        Ok(db) => db,
-        Err(_) => {
-            tracing::error!("数据库连接不可用，无法处理角色切换请求");
-            return Err(AppError::InternalServerError(
-                "数据库服务不可用，请稍后重试".to_string()
-            ));
-        }
-    };
-
-    let jwt_service = depot.get::<Arc<JwtService>>("jwt_service").unwrap();
+    let db = get_db(depot)?;
+    let jwt_service = get_jwt_service(depot);
 
     let user_id_str = match depot.get::<String>("user_id") {
-        Ok(id) => id,
+        Ok(user_id) => user_id,
         Err(_) => return Err(AppError::Unauthorized),
     };
-
     let user_id = Uuid::parse_str(user_id_str.as_str()).map_err(|_| AppError::Unauthorized)?;
+    let role_id = parse_uuid(&switch_data.role_id, "无效的角色ID")?;
+    let role_item = ensure_active_user_role(db.as_ref(), user_id, role_id).await?;
 
-    let role_id = Uuid::parse_str(&switch_data.role_id)
-        .map_err(|_| AppError::BadRequest("无效的角色ID".to_string()))?;
-
-    let user_role_with_role = user_role::Entity::find()
-        .filter(user_role::Column::UserId.eq(user_id))
-        .filter(user_role::Column::RoleId.eq(role_id))
-        .find_also_related(role::Entity)
-        .one(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?;
-
-    let (_, role_opt) =
-        user_role_with_role.ok_or(AppError::Forbidden("用户没有该角色权限".to_string()))?;
-    let role = role_opt.ok_or(AppError::InternalServerError("角色不存在".to_string()))?;
-
-    let access_token = jwt_service.generate_access_token(user_id, role.id, role.code.clone())?;
-
+    let access_token =
+        jwt_service.generate_access_token(user_id, role_item.id, role_item.code.clone())?;
     let refresh_token_value =
-        jwt_service.generate_refresh_token(user_id, role.id, role.code.clone())?;
+        jwt_service.generate_refresh_token(user_id, role_item.id, role_item.code.clone())?;
 
     let mut cookie = Cookie::new("refresh_token", refresh_token_value.clone());
     cookie.set_path("/");
@@ -288,17 +313,12 @@ pub async fn switch_role(
     let response = SwitchRoleResponse {
         access_token,
         refresh_token: refresh_token_value,
-        role: UserRole {
-            role_id: role.id.to_string(),
-            role_code: role.code,
-            role_name: role.name,
-        },
+        role: to_user_role(&role_item),
     };
 
     Ok(Json(ApiResponse::success(response)))
 }
 
-/// 获取当前用户信息
 #[endpoint(
     tags("认证"),
     responses(
@@ -308,11 +328,9 @@ pub async fn switch_role(
     )
 )]
 pub async fn get_user_info(depot: &Depot) -> Result<Json<ApiResponse<UserInfoResponse>>, AppError> {
-    // 从 token 中获取 user_id，由 auth_middleware 解析后写入 depot。
     let user_id_str = depot
         .get::<String>("user_id")
         .map_err(|_| AppError::Unauthorized)?;
-
     let user_id = Uuid::parse_str(user_id_str.as_str()).map_err(|_| AppError::Unauthorized)?;
 
     let current_role_id = depot
@@ -324,42 +342,22 @@ pub async fn get_user_info(depot: &Depot) -> Result<Json<ApiResponse<UserInfoRes
         .map_err(|_| AppError::Unauthorized)?
         .clone();
 
-    let db = depot
-        .get::<Arc<DatabaseConnection>>("db")
-        .map_err(|_| AppError::InternalServerError("数据库服务不可用".to_string()))?;
-
-    let user = user::Entity::find_by_id(user_id)
-        .one(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?
-        .ok_or(AppError::NotFound("用户不存在".to_string()))?;
-
-    let user_roles = user_role::Entity::find()
-        .filter(user_role::Column::UserId.eq(user_id))
-        .find_also_related(role::Entity)
-        .all(db.as_ref())
-        .await
-        .map_err(|e| AppError::InternalServerError(e.to_string()))?;
-
-    let roles: Vec<UserRole> = user_roles
+    let db = get_db(depot)?;
+    let user_item = ensure_active_user(db.as_ref(), user_id).await?;
+    let roles = get_available_roles_for_user(db.as_ref(), user_id)
+        .await?
         .iter()
-        .filter_map(|(_, role_opt)| {
-            role_opt.as_ref().map(|r| UserRole {
-                role_id: r.id.to_string(),
-                role_code: r.code.clone(),
-                role_name: r.name.clone(),
-            })
-        })
+        .map(to_user_role)
         .collect();
 
     let response = UserInfoResponse {
-        id: user.id.to_string(),
-        user_name: user.username,
-        real_name: user.real_name,
-        email: user.email,
-        phone: user.phone,
-        avatar: user.avatar,
-        status: user.status,
+        id: user_item.id.to_string(),
+        user_name: user_item.username,
+        real_name: user_item.real_name,
+        email: user_item.email,
+        phone: user_item.phone,
+        avatar: user_item.avatar,
+        status: user_item.status,
         roles,
         current_role_id,
         current_role_code,
@@ -368,12 +366,9 @@ pub async fn get_user_info(depot: &Depot) -> Result<Json<ApiResponse<UserInfoRes
     Ok(Json(ApiResponse::success(response)))
 }
 
-/// 获取 RSA 公钥
 #[endpoint(
     tags("认证"),
-    responses(
-        (status_code = 200, description = "成功获取公钥")
-    )
+    responses((status_code = 200, description = "成功获取公钥"))
 )]
 pub async fn get_public_key() -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let public_key = rsa_crypto::get_public_key()?;

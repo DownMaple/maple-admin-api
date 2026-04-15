@@ -10,6 +10,8 @@ pub struct Model {
     pub username: String,
     pub password: String,
     pub real_name: String,
+    pub gender: Option<i16>,
+    pub nick_name: Option<String>,
     pub email: Option<String>,
     pub phone: Option<String>,
     pub avatar: Option<String>,

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use salvo::oapi::ToSchema;
+use serde::{Deserialize, Serialize};
 
 /// 登录请求
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

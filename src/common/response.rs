@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use salvo::oapi::ToSchema;
+use serde::{Deserialize, Serialize};
 
 /// API 响应结构
 #[derive(Serialize, Deserialize, Debug, ToSchema)]
@@ -53,23 +53,22 @@ where
 #[serde(rename_all = "camelCase")]
 #[salvo(schema(bound = "T: ToSchema + 'static"))]
 pub struct PageResponse<T> {
+    pub current: u64,
+    pub size: u64,
     pub total: u64,
-    pub page: u64,
-    pub page_size: u64,
-    pub items: Vec<T>,
+    pub records: Vec<T>,
 }
 
 impl<T> PageResponse<T>
 where
     T: Serialize,
 {
-    pub fn new(items: Vec<T>, total: u64, page: u64, page_size: u64) -> Self {
+    pub fn new(records: Vec<T>, total: u64, current: u64, size: u64) -> Self {
         Self {
+            current,
+            size,
             total,
-            page,
-            page_size,
-            items,
+            records,
         }
     }
 }
-

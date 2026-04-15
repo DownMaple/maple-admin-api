@@ -1,5 +1,5 @@
-use bcrypt::{hash, verify, DEFAULT_COST};
 use super::error::AppError;
+use bcrypt::{hash, verify, DEFAULT_COST};
 
 pub fn hash_password(password: &str) -> Result<String, AppError> {
     hash(password, DEFAULT_COST).map_err(AppError::from)

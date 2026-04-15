@@ -1,6 +1,6 @@
+use super::error::AppError;
 use std::env;
 use std::fs;
-use super::error::AppError;
 
 /// 密钥管理器
 /// 支持从多个来源加载密钥：环境变量、配置文件、密码机（预留）
@@ -16,20 +16,27 @@ impl KeyManager {
     pub fn new() -> Result<Self, AppError> {
         // 1. 尝试从环境变量加载
         if let Ok(private_key) = env::var("RSA_PRIVATE_KEY") {
-            let public_key = env::var("RSA_PUBLIC_KEY")
-                .map_err(|_| AppError::InternalServerError("环境变量 RSA_PUBLIC_KEY 未设置".to_string()))?;
-            
+            let public_key = env::var("RSA_PUBLIC_KEY").map_err(|_| {
+                AppError::InternalServerError("环境变量 RSA_PUBLIC_KEY 未设置".to_string())
+            })?;
+
             tracing::info!("✅ 从环境变量加载 RSA 密钥");
-            return Ok(Self { private_key, public_key });
+            return Ok(Self {
+                private_key,
+                public_key,
+            });
         }
 
         // 2. 尝试从配置文件加载
         if let Ok(private_key) = fs::read_to_string("config/rsa_private_key.pem") {
             let public_key = fs::read_to_string("config/rsa_public_key.pem")
                 .map_err(|e| AppError::InternalServerError(format!("读取公钥文件失败: {}", e)))?;
-            
+
             tracing::info!("✅ 从配置文件加载 RSA 密钥");
-            return Ok(Self { private_key, public_key });
+            return Ok(Self {
+                private_key,
+                public_key,
+            });
         }
 
         // 3. 使用内置密钥（仅用于开发环境）
@@ -90,10 +97,10 @@ L9+UUzAtEuaowR0zgQIDAQAB
 pub trait CryptoDeviceService {
     /// 使用密码机解密
     fn decrypt(&self, encrypted_data: &[u8]) -> Result<Vec<u8>, AppError>;
-    
+
     /// 使用密码机加密
     fn encrypt(&self, plain_data: &[u8]) -> Result<Vec<u8>, AppError>;
-    
+
     /// 获取公钥
     fn get_public_key(&self) -> Result<String, AppError>;
 }
@@ -131,12 +138,12 @@ impl CryptoDeviceManager {
 //         // 调用密码机 API 进行解密
 //         todo!("实现密码机解密")
 //     }
-//     
+//
 //     fn encrypt(&self, plain_data: &[u8]) -> Result<Vec<u8>, AppError> {
 //         // 调用密码机 API 进行加密
 //         todo!("实现密码机加密")
 //     }
-//     
+//
 //     fn get_public_key(&self) -> Result<String, AppError> {
 //         // 从密码机获取公钥
 //         todo!("从密码机获取公钥")

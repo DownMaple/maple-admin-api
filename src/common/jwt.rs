@@ -17,10 +17,15 @@ pub struct Claims {
 }
 
 impl Claims {
-    pub fn new_access_token(user_id: Uuid, role_id: Uuid, role_code: String, expiration_hours: i64) -> Self {
+    pub fn new_access_token(
+        user_id: Uuid,
+        role_id: Uuid,
+        role_code: String,
+        expiration_hours: i64,
+    ) -> Self {
         let now = Utc::now();
         let exp = now + Duration::hours(expiration_hours);
-        
+
         Self {
             sub: user_id.to_string(),
             role_id: role_id.to_string(),
@@ -32,10 +37,15 @@ impl Claims {
         }
     }
 
-    pub fn new_refresh_token(user_id: Uuid, role_id: Uuid, role_code: String, expiration_days: i64) -> Self {
+    pub fn new_refresh_token(
+        user_id: Uuid,
+        role_id: Uuid,
+        role_code: String,
+        expiration_days: i64,
+    ) -> Self {
         let now = Utc::now();
         let exp = now + Duration::days(expiration_days);
-        
+
         Self {
             sub: user_id.to_string(),
             role_id: role_id.to_string(),
@@ -63,8 +73,18 @@ impl JwtService {
         }
     }
 
-    pub fn generate_access_token(&self, user_id: Uuid, role_id: Uuid, role_code: String) -> Result<String, AppError> {
-        let claims = Claims::new_access_token(user_id, role_id, role_code, self.access_token_expiration_hours);
+    pub fn generate_access_token(
+        &self,
+        user_id: Uuid,
+        role_id: Uuid,
+        role_code: String,
+    ) -> Result<String, AppError> {
+        let claims = Claims::new_access_token(
+            user_id,
+            role_id,
+            role_code,
+            self.access_token_expiration_hours,
+        );
         let token = encode(
             &Header::default(),
             &claims,
@@ -73,8 +93,18 @@ impl JwtService {
         Ok(token)
     }
 
-    pub fn generate_refresh_token(&self, user_id: Uuid, role_id: Uuid, role_code: String) -> Result<String, AppError> {
-        let claims = Claims::new_refresh_token(user_id, role_id, role_code, self.refresh_token_expiration_days);
+    pub fn generate_refresh_token(
+        &self,
+        user_id: Uuid,
+        role_id: Uuid,
+        role_code: String,
+    ) -> Result<String, AppError> {
+        let claims = Claims::new_refresh_token(
+            user_id,
+            role_id,
+            role_code,
+            self.refresh_token_expiration_days,
+        );
         let token = encode(
             &Header::default(),
             &claims,
